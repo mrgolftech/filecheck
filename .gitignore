@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+dist/
+build/
+*.egg-info/
+
+# IDE
+.vscode/
+.idea/
+
+# FileCheck runtime data
+runtime/
+data/
+reports/
+logs/
+backups/
+quarantine/
+staging/
+*.manifest.json
+*.scan.json
+*.db
+*.sqlite
+*.sqlite3
+
+# Local config may contain paths or internal rules
+config/rules.local.yaml
+config/settings.local.yaml
+
+# Tools/binaries
+/tools/*.exe
+/tools/*.dll
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
