@@ -103,7 +103,6 @@ def _safe_keyword(keyword: str) -> str:
     keyword = keyword.strip()
     if not keyword:
         raise ValueError("关键词不能为空")
-    # Current rules are plain Chinese words. Quoting keeps spaces/operators literal.
     if '"' in keyword:
         raise ValueError(f"V0.1 暂不支持包含双引号的关键词: {keyword!r}")
     return f'"{keyword}"'
@@ -123,9 +122,13 @@ def search_keyword(
         raise ValueError("扩展名列表不能为空")
 
     query = f"{_safe_keyword(keyword)} ext:{';'.join(ext_list)}"
-    args = ["-n", str(max_results), "-s"]
+    # /a-d asks Everything itself for files only. -path is applied by Everything
+    # before -n limiting, avoiding false omissions when scanning one drive/folder.
+    args = ["-timeout", "10000", "/a-d", "-full-path", "-n", str(max_results), "-s"]
     if match_path:
         args.append("-p")
+    if path_prefix:
+        args.extend(["-path", str(Path(path_prefix).expanduser())])
     args.append(query)
 
     output = _run(es_path, args, timeout=60)
@@ -144,8 +147,9 @@ def search_keyword(
                 continue
             if common != prefix:
                 continue
-        if candidate.is_file():
-            results.append(candidate)
+        # Do not silently discard indexed files only because stat/is_file fails
+        # (for example permissions or temporarily unavailable removable media).
+        results.append(candidate)
     return results
 
 
@@ -196,8 +200,10 @@ def scan_keywords(
             stat = Path(item["path"]).stat()
             item["size"] = stat.st_size
             item["mtime_ns"] = stat.st_mtime_ns
+            item["accessible"] = True
         except OSError:
             item["size"] = None
             item["mtime_ns"] = None
+            item["accessible"] = False
 
     return sorted(found.values(), key=lambda x: (x["directory"].lower(), x["path"].lower()))
