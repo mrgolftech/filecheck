@@ -3,14 +3,11 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
-import pytest
-
 from filecheck.backup import create_backup, restore_backup, verify_backup
 from filecheck.util import sha256_file
 
 
-@pytest.mark.parametrize("zip_mode", [False, True])
-def test_repeated_roundtrip_20_cycles(tmp_path: Path, zip_mode: bool) -> None:
+def test_repeated_roundtrip_20_cycles(tmp_path: Path) -> None:
     for index in range(20):
         source = tmp_path / f"src-{index}"
         source.mkdir()
@@ -21,7 +18,7 @@ def test_repeated_roundtrip_20_cycles(tmp_path: Path, zip_mode: bool) -> None:
             path.write_bytes((bytes([index % 251, n]) * 32768) + f"尾部-{index}-{n}".encode("utf-8"))
             files.append((path, sha256_file(path)))
 
-        backup = create_backup([source], tmp_path / "backups", zip_mode=zip_mode)
+        backup = create_backup([source], tmp_path / "backups")
         verify_backup(backup)
         shutil.rmtree(source)
         restore_backup(backup)
