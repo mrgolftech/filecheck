@@ -21,6 +21,7 @@ ProgressCallback = Callable[[str, int, int, str], None]
 
 _MIN_FREE_RESERVE = 16 * 1024 * 1024
 _MAX_FREE_RESERVE = 512 * 1024 * 1024
+_IO_CHUNK_SIZE = 8 * 1024 * 1024
 
 
 def _notify(progress: ProgressCallback | None, stage: str, current: int, total: int, path: str | Path) -> None:
@@ -67,7 +68,7 @@ def _collect_files(sources: Iterable[str | Path], destination_root: Path) -> lis
     return files
 
 
-def _stream_sha256(stream: BinaryIO, chunk_size: int = 1024 * 1024) -> str:
+def _stream_sha256(stream: BinaryIO, chunk_size: int = _IO_CHUNK_SIZE) -> str:
     digest = hashlib.sha256()
     while True:
         chunk = stream.read(chunk_size)
@@ -79,10 +80,10 @@ def _stream_sha256(stream: BinaryIO, chunk_size: int = 1024 * 1024) -> str:
 def _sync_file(path: Path) -> None:
     """Flush file data using a writable handle on Windows/POSIX.
 
-    Windows rejects ``os.fsync`` on a read-only descriptor. ``shutil.copy2`` may
-    also preserve a source read-only attribute onto the temporary copy, so this
-    helper temporarily enables owner-write only when required, flushes the file,
-    and restores the original mode before returning.
+    Windows rejects ``os.fsync`` on a read-only descriptor. A copied source may
+    also preserve a read-only attribute onto the temporary copy, so this helper
+    temporarily enables owner-write only when required, flushes the file, and
+    restores the original mode before returning.
     """
 
     def flush_with_write_handle() -> None:
@@ -110,8 +111,8 @@ def _estimate_required_bytes(files: Iterable[Path], *, zip_mode: bool) -> tuple[
     for path in files:
         total += path.stat().st_size
     reserve = max(_MIN_FREE_RESERVE, min(_MAX_FREE_RESERVE, total // 20))
-    # ZIP creation currently uses a fully verified staging copy plus a temporary
-    # archive at the same time, so worst-case storage is roughly 2x input size.
+    # ZIP creation keeps a staging copy plus a temporary archive at the same
+    # time, so worst-case storage is roughly 2x input size.
     multiplier = 2 if zip_mode else 1
     return total, total * multiplier + reserve
 
@@ -201,6 +202,28 @@ def _read_manifest_from_zip(zf: zipfile.ZipFile) -> dict:
     return manifest
 
 
+def read_backup_manifest(source: str | Path) -> dict:
+    """Read and structurally validate a manifest without re-hashing payloads.
+
+    Use this for metadata display after ``create_backup`` has already returned,
+    because ``create_backup`` only publishes a batch after one full SHA-256
+    verification. Standalone trust decisions must still call ``verify_backup``.
+    """
+
+    source = Path(source).expanduser()
+    if not source.exists():
+        raise BackupError(f"备份不存在: {source}")
+    if source.is_dir():
+        return _read_manifest_from_dir(source)
+    if not zipfile.is_zipfile(source):
+        raise BackupError(f"不是有效 ZIP 备份: {source}")
+    try:
+        with zipfile.ZipFile(source, "r") as zf:
+            return _read_manifest_from_zip(zf)
+    except zipfile.BadZipFile as exc:
+        raise BackupError(f"ZIP 备份损坏或不可读: {source}") from exc
+
+
 def verify_backup(source: str | Path, *, progress: ProgressCallback | None = None) -> dict:
     """Verify every backed-up payload against its original SHA-256 manifest."""
     source = Path(source).expanduser()
@@ -248,28 +271,75 @@ def verify_backup(source: str | Path, *, progress: ProgressCallback | None = Non
         raise BackupError(f"ZIP 备份损坏或不可读: {source}") from exc
 
 
+def _copy_source_to_temp_with_hash(source: Path, temp: Path) -> tuple[str, int]:
+    """Copy once while hashing the exact byte stream written to the backup.
+
+    The old implementation hashed the source, copied it, hashed the temporary
+    copy, then hashed the source again. That was intentionally conservative but
+    turned one logical backup into several full-disk read passes. Here the source
+    is read once; SHA-256 is calculated during that same read. The completed
+    batch is still independently re-read and SHA-256 verified before publication.
+    """
+
+    digest = hashlib.sha256()
+    copied = 0
+    with source.open("rb") as src, temp.open("xb") as dst:
+        while True:
+            chunk = src.read(_IO_CHUNK_SIZE)
+            if not chunk:
+                break
+            dst.write(chunk)
+            digest.update(chunk)
+            copied += len(chunk)
+        dst.flush()
+
+    # Preserve the same basic metadata promise as shutil.copy2. Metadata is set
+    # before the one durability flush so both payload and basic file metadata are
+    # committed together as far as the platform permits.
+    shutil.copystat(source, temp, follow_symlinks=False)
+    _sync_file(temp)
+    return digest.hexdigest(), copied
+
+
+def _source_snapshot_changed(before: os.stat_result, after: os.stat_result, copied: int) -> bool:
+    if copied != before.st_size:
+        return True
+    if before.st_size != after.st_size or before.st_mtime_ns != after.st_mtime_ns:
+        return True
+
+    before_dev = getattr(before, "st_dev", None)
+    after_dev = getattr(after, "st_dev", None)
+    if before_dev is not None and after_dev is not None and before_dev != after_dev:
+        return True
+
+    before_ino = getattr(before, "st_ino", 0)
+    after_ino = getattr(after, "st_ino", 0)
+    if before_ino and after_ino and before_ino != after_ino:
+        return True
+
+    before_ctime = getattr(before, "st_ctime_ns", None)
+    after_ctime = getattr(after, "st_ctime_ns", None)
+    if before_ctime is not None and after_ctime is not None and before_ctime != after_ctime:
+        return True
+    return False
+
+
 def _atomic_copy_to_backup(source: Path, target: Path) -> tuple[str, os.stat_result]:
     target.parent.mkdir(parents=True, exist_ok=True)
     temp = target.with_name(f".{target.name}.{uuid.uuid4().hex}.part")
     before = source.stat()
-    before_hash = sha256_file(source)
     try:
-        shutil.copy2(source, temp)
-        _sync_file(temp)
-        copied_hash = sha256_file(temp)
+        source_hash, copied = _copy_source_to_temp_with_hash(source, temp)
         after = source.stat()
-        after_hash = sha256_file(source)
-        if (
-            before.st_size != after.st_size
-            or before.st_mtime_ns != after.st_mtime_ns
-            or before_hash != after_hash
-        ):
+        if _source_snapshot_changed(before, after, copied):
             raise BackupError(f"源文件在备份过程中发生变化，拒绝继续: {source}")
-        if before_hash != copied_hash:
-            raise BackupError(f"备份 SHA-256 校验失败: {source}")
+
+        # The temporary payload was flushed above. Publishing is a same-directory
+        # rename; a later full verify re-reads the stored file before the batch is
+        # considered complete. Avoiding another per-file flush here materially
+        # improves many-small-file performance on USB/HDD targets.
         os.replace(temp, target)
-        _sync_file(target)
-        return before_hash, before
+        return source_hash, before
     finally:
         try:
             temp.unlink(missing_ok=True)
@@ -277,18 +347,35 @@ def _atomic_copy_to_backup(source: Path, target: Path) -> tuple[str, os.stat_res
             pass
 
 
-def _create_zip_from_staging(staging: Path, archive: Path) -> None:
+def _create_zip_from_staging(
+    staging: Path,
+    archive: Path,
+    *,
+    progress: ProgressCallback | None = None,
+) -> None:
     temp_archive = archive.with_name(f".{archive.stem}.{uuid.uuid4().hex}.tmp.zip")
     try:
-        with zipfile.ZipFile(temp_archive, "w", compression=zipfile.ZIP_DEFLATED, allowZip64=True) as zf:
+        # Level 1 favors backup throughput. Most common office/PDF/archive inputs
+        # are already compressed, so higher DEFLATE levels often add CPU time for
+        # little practical space reduction.
+        with zipfile.ZipFile(
+            temp_archive,
+            "w",
+            compression=zipfile.ZIP_DEFLATED,
+            compresslevel=1,
+            allowZip64=True,
+        ) as zf:
             for path in staging.rglob("*"):
                 if path.is_file():
                     zf.write(path, path.relative_to(staging).as_posix())
         _sync_file(temp_archive)
-        verify_backup(temp_archive)
+
+        # One full ZIP verification is enough: it validates CRC, manifest, member
+        # sizes and SHA-256 for every payload. Renaming the already verified file
+        # does not alter its bytes, so a second/third archive pass is redundant.
+        verify_backup(temp_archive, progress=progress)
         os.replace(temp_archive, archive)
         _sync_file(archive)
-        verify_backup(archive)
     finally:
         try:
             temp_archive.unlink(missing_ok=True)
@@ -325,6 +412,7 @@ def create_backup(
         "created_at": now_iso(),
         "mode": "zip" if zip_mode else "directory",
         "source_removed": False,
+        "copy_strategy": "single-pass-sha256-v1",
         "source_bytes_total": source_bytes,
         "space_required_estimate": required_bytes,
         "space_free_at_start": free_bytes,
@@ -353,17 +441,21 @@ def create_backup(
             _notify(progress, "copy", index, total, source)
 
         write_json(staging / "manifest.json", manifest)
-        verify_backup(staging)
 
         if zip_mode:
-            _create_zip_from_staging(staging, archive)
+            # The ZIP verification below compares every archived member directly
+            # with the source hash stored in manifest, so an additional staging
+            # verification pass would only re-read the same payloads.
+            _create_zip_from_staging(staging, archive, progress=progress)
             shutil.rmtree(staging)
             result: Path = archive
         else:
+            # Directory mode performs exactly one full independent payload verify
+            # before the verified staging tree is atomically published by rename.
+            verify_backup(staging, progress=progress)
             os.replace(staging, final_dir)
             result = final_dir
 
-        verify_backup(result)
         completed = True
         return result
     finally:
@@ -477,7 +569,7 @@ def restore_backup(
             temp = _restore_temp_path(target)
             try:
                 with zf.open(member, "r") as src, temp.open("wb") as dst:
-                    shutil.copyfileobj(src, dst, length=1024 * 1024)
+                    shutil.copyfileobj(src, dst, length=_IO_CHUNK_SIZE)
                     dst.flush()
                     os.fsync(dst.fileno())
                 _finish_atomic_restore(temp, target, item)
