@@ -182,3 +182,39 @@ def test_bulk_migration_250_files_stress(tmp_path: Path) -> None:
 
     restore_backup(backup)
     assert all(sha256_file(Path(raw)) == digest for raw, digest in expected.items())
+
+
+def test_completed_source_that_reappears_is_not_deleted_on_resume(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    expected = _make_files(source, 1)
+    source_file = Path(next(iter(expected)))
+    original_bytes = source_file.read_bytes()
+    backup = create_backup([source], tmp_path / "backup")
+
+    state_file, state = remove_verified_sources(backup)
+    assert state["status"] == "completed"
+    assert not source_file.exists()
+
+    # Simulate an application recreating the same path after migration. Even if
+    # bytes happen to be identical, resume must not assume it is the old file.
+    source_file.parent.mkdir(parents=True, exist_ok=True)
+    source_file.write_bytes(original_bytes)
+    _, resumed = resume_migration(state_file)
+
+    assert source_file.exists()
+    assert resumed["status"] == "partial"
+    assert resumed["failed"] == 1
+    assert resumed["items"][0]["state"] == "reappeared"
+
+
+def test_state_file_cannot_be_written_inside_directory_backup(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    expected = _make_files(source, 2)
+    backup = create_backup([source], tmp_path / "backup")
+
+    with pytest.raises(MigrationError, match="备份批次目录内部"):
+        remove_verified_sources(backup, state_path=backup / "migration-state.json")
+
+    assert all(Path(raw).exists() for raw in expected)
