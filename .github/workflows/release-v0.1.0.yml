@@ -43,6 +43,10 @@ jobs:
           else {
             "exists=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           }
+          # A missing release is the normal first-publish case. GitHub's pwsh
+          # wrapper otherwise propagates the non-zero gh exit code after this
+          # script even though we handled it above.
+          exit 0
 
       - name: Setup Python x64
         if: steps.release_check.outputs.exists != 'true'
