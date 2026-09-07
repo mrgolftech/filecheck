@@ -6,8 +6,9 @@ import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 
-from .backup import BackupError, create_backup, restore_backup
+from .backup import BackupError, create_backup, restore_backup, verify_backup
 from .everything import EverythingError, get_status, scan_keywords
+from .selftest import run_selftest
 from .util import now_iso, write_json
 
 
@@ -121,23 +122,19 @@ def cmd_backup(args: argparse.Namespace) -> int:
     if not sources:
         raise RuntimeError("至少指定一个源文件/目录，或使用 --from-scan")
 
-    if args.remove_source:
-        print("警告：--remove-source 会在完整备份并校验成功后移除原文件。")
-        if not args.yes:
-            answer = input("确认继续？输入 YES: ").strip()
-            if answer != "YES":
-                print("已取消。")
-                return 2
+    result = create_backup(sources, args.dest, zip_mode=args.zip)
+    manifest = verify_backup(result)
+    print(f"备份完成并通过全量 SHA-256 校验: {result.resolve()}")
+    print(f"文件数: {len(manifest['items'])}")
+    print("V0.1 为安全起见不会自动移除原文件；请先完成恢复演练和人工确认。")
+    return 0
 
-    result = create_backup(
-        sources,
-        args.dest,
-        zip_mode=args.zip,
-        remove_source=args.remove_source,
-    )
-    print(f"备份完成: {result.resolve()}")
-    if args.remove_source:
-        print("原文件已在二次 SHA-256 校验后移出；恢复路径保存在 manifest 中。")
+
+def cmd_verify(args: argparse.Namespace) -> int:
+    manifest = verify_backup(args.backup)
+    print(f"备份验证通过: {Path(args.backup).resolve()}")
+    print(f"批次: {manifest.get('batch_id', '-')}")
+    print(f"文件数: {len(manifest['items'])}")
     return 0
 
 
@@ -146,6 +143,14 @@ def cmd_restore(args: argparse.Namespace) -> int:
     restored = sum(1 for row in results if row["state"] == "restored")
     skipped = sum(1 for row in results if row["state"] == "skipped")
     print(f"恢复完成：restored={restored}, skipped={skipped}")
+    return 0
+
+
+def cmd_selftest(args: argparse.Namespace) -> int:
+    report = run_selftest()
+    for name, state in report.items():
+        print(f"{name}: {state}")
+    print("FileCheck 备份/验证/恢复自检通过。")
     return 0
 
 
@@ -168,25 +173,30 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--output", default="scan-results.json", help="扫描结果 JSON")
     p.set_defaults(func=cmd_scan)
 
-    p = sub.add_parser("backup", help="复制/压缩备份，并记录原始路径和 SHA-256")
+    p = sub.add_parser("backup", help="只读复制/压缩备份，并记录原始路径和 SHA-256")
     p.add_argument("sources", nargs="*", help="要备份的文件或目录")
     p.add_argument("--dest", required=True, help="合规备份目标根目录")
     p.add_argument("--zip", action="store_true", help="生成 ZIP 包而不是目录备份")
-    p.add_argument("--remove-source", action="store_true", help="备份完整校验后移除原文件")
-    p.add_argument("--yes", action="store_true", help="与 --remove-source 配合，跳过交互确认")
     p.add_argument("--from-scan", help="从 scan-results.json 选择候选文件")
     p.add_argument("--select", help="候选编号，例如 1,3-5")
     p.set_defaults(func=cmd_backup)
 
-    p = sub.add_parser("restore", help="依据 manifest 恢复到原始路径")
+    p = sub.add_parser("verify", help="对备份逐文件执行大小 + SHA-256 全量验证")
+    p.add_argument("backup", help="备份批次目录或 ZIP 文件")
+    p.set_defaults(func=cmd_verify)
+
+    p = sub.add_parser("restore", help="验证整个备份后，依据 manifest 原子恢复到原始路径")
     p.add_argument("backup", help="备份批次目录或 ZIP 文件")
     p.add_argument(
         "--conflict",
         choices=("skip", "overwrite", "rename"),
         default="skip",
-        help="原路径已有文件时的策略",
+        help="原路径已有文件时的策略；overwrite 也会先恢复到临时文件并校验后再原子替换",
     )
     p.set_defaults(func=cmd_restore)
+
+    p = sub.add_parser("selftest", help="在临时目录执行目录/ZIP备份与恢复回环自检")
+    p.set_defaults(func=cmd_selftest)
     return parser
 
 
