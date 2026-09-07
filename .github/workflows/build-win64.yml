@@ -4,6 +4,7 @@ on:
   workflow_dispatch:
   push:
     branches:
+      - main
       - feat/v0.1-everything-backup
     paths:
       - "src/**"
@@ -60,34 +61,75 @@ jobs:
           .\dist\FileCheck.exe --help | Out-Host
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      - name: Download and verify official ES 1.1.0.37 x64
+        shell: pwsh
+        run: |
+          $url = "https://github.com/voidtools/ES/releases/download/1.1.0.37/ES-1.1.0.37.x64.zip"
+          $expected = "7A57670D9152068D05876C58858C82FE6D3915A9DF2C819F4DE8801E2929D3A7"
+          Invoke-WebRequest -Uri $url -OutFile "ES-1.1.0.37.x64.zip"
+          $actual = (Get-FileHash "ES-1.1.0.37.x64.zip" -Algorithm SHA256).Hash
+          if ($actual -ne $expected) {
+            throw "ES archive SHA-256 mismatch. expected=$expected actual=$actual"
+          }
+          Expand-Archive "ES-1.1.0.37.x64.zip" -DestinationPath "es-dist" -Force
+          $es = Get-ChildItem "es-dist" -Recurse -File -Filter "es.exe" | Select-Object -First 1
+          if (-not $es) { throw "es.exe not found in official ES archive" }
+          & $es.FullName -version | Out-Host
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Assemble portable package
         shell: pwsh
         run: |
           $pkg = "package\FileCheck-win64"
           New-Item -ItemType Directory -Force "$pkg\config" | Out-Null
           New-Item -ItemType Directory -Force "$pkg\tools" | Out-Null
+
           Copy-Item "dist\FileCheck.exe" "$pkg\FileCheck.exe"
           Copy-Item "config\rules.json" "$pkg\config\rules.json"
           Copy-Item "packaging\README-WIN64.txt" "$pkg\README-WIN64.txt"
-          @"
-          ES CLI is intentionally not bundled.
-          Put ES CLI 1.1.0.37+ here as:
-              tools\es.exe
+          Copy-Item "packaging\THIRD-PARTY-NOTICES.txt" "$pkg\THIRD-PARTY-NOTICES.txt"
 
-          Everything 1.4.x must be installed/running on the target Windows machine.
+          $es = Get-ChildItem "es-dist" -Recurse -File -Filter "es.exe" | Select-Object -First 1
+          Copy-Item $es.FullName "$pkg\tools\es.exe"
+
+          @"
+          Bundled component:
+            Everything Command-line Interface (ES) 1.1.0.37 x64
+            tools\es.exe
+
+          Everything 1.4.x itself must still be installed/running on the target Windows machine.
+          ES license/source information is in ..\THIRD-PARTY-NOTICES.txt.
           "@ | Set-Content -Encoding UTF8 "$pkg\tools\README.txt"
 
-          $hash = (Get-FileHash "$pkg\FileCheck.exe" -Algorithm SHA256).Hash
-          "FileCheck.exe  $hash" | Set-Content -Encoding ASCII "$pkg\SHA256SUMS.txt"
-          Compress-Archive -Path "$pkg\*" -DestinationPath "package\FileCheck-win64.zip" -Force
+          $filecheckHash = (Get-FileHash "$pkg\FileCheck.exe" -Algorithm SHA256).Hash
+          $esHash = (Get-FileHash "$pkg\tools\es.exe" -Algorithm SHA256).Hash
+          @(
+            "FileCheck.exe  $filecheckHash",
+            "tools\es.exe  $esHash"
+          ) | Set-Content -Encoding ASCII "$pkg\SHA256SUMS.txt"
+
+          Compress-Archive -Path "$pkg\*" -DestinationPath "package\FileCheck-v0.1.0-win64.zip" -Force
 
           Get-Item "$pkg\FileCheck.exe" | Format-List Name,Length,LastWriteTime
+          Get-Item "$pkg\tools\es.exe" | Format-List Name,Length,LastWriteTime
           Get-Content "$pkg\SHA256SUMS.txt"
+
+      - name: Verify packaged ES location
+        shell: pwsh
+        run: |
+          Push-Location "$env:TEMP"
+          try {
+            & "$env:GITHUB_WORKSPACE\package\FileCheck-win64\tools\es.exe" -version | Out-Host
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          finally {
+            Pop-Location
+          }
 
       - name: Upload Win64 artifact
         uses: actions/upload-artifact@v4
         with:
-          name: FileCheck-win64
-          path: package/FileCheck-win64.zip
+          name: FileCheck-v0.1.0-win64
+          path: package/FileCheck-v0.1.0-win64.zip
           if-no-files-found: error
           retention-days: 30
