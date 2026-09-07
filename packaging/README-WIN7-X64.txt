@@ -6,6 +6,7 @@ FileCheck v0.1.0 - Windows 7 SP1 x64 compatibility package
 - Windows 7 SP1 64 位。
 - 该版本使用 Python 3.8.10 + PyInstaller 5.13.2 构建，用于兼容 Windows 7。
 - Windows 10/11 建议优先使用 win10plus-x64 发布包。
+- 2026-09-07 已在真实 Windows 7 64 位电脑上完成启动与实际使用验收，用户反馈运行正常。
 
 环境要求
 --------
@@ -31,8 +32,8 @@ FileCheck v0.1.0 - Windows 7 SP1 x64 compatibility package
 - backup 不会删除源文件。
 - 删除源文件前，FileCheck 会重新验证完整备份并重新核对源文件，最后还需要一次 YES 确认。
 - 目录备份保持源盘符、目录层级和原始文件名，便于人工检查。
-- Windows 7 的长路径能力弱于 Windows 10/11。虽然 FileCheck 对 Windows 文件 I/O 做了长路径兼容处理，但极端超长路径仍需重点实机验证。
-- 本兼容包必须在真实 Windows 7 SP1 x64 上完成最终运行验证，GitHub Actions 构建环境本身不是 Windows 7。
+- Windows 7 的长路径能力弱于 Windows 10/11。虽然 FileCheck 对 Windows 文件 I/O 做了长路径兼容处理，但极端超长路径仍应重点关注。
+- Win7 实机验收已确认当前 v0.1.0 兼容包可正常启动和使用；后续若修改 Python/PyInstaller 版本或 Windows 文件 I/O 实现，应重新执行 Win7 实机回归。
 
 第三方组件
 ----------
