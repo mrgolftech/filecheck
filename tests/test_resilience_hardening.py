@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import stat
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 import filecheck.backup as backup_mod
-from filecheck.backup import BackupError, create_backup, verify_backup
+from filecheck.backup import BackupError, create_backup, restore_backup, verify_backup
 
 
 def test_insufficient_destination_space_rejected_before_staging(
@@ -94,3 +95,20 @@ def test_backup_payload_is_fsynced_before_success(
 
     verify_backup(result)
     assert calls
+
+
+def test_readonly_file_backup_and_restore_roundtrip(tmp_path: Path) -> None:
+    source = tmp_path / "readonly.txt"
+    source.write_text("read-only payload", encoding="utf-8")
+    source.chmod(stat.S_IREAD)
+
+    backup = create_backup([source], tmp_path / "backup")
+    verify_backup(backup)
+
+    # Make the disposable source removable for the roundtrip test itself.
+    source.chmod(stat.S_IREAD | stat.S_IWRITE)
+    source.unlink()
+    restored = restore_backup(backup)
+
+    assert restored[0]["state"] == "restored"
+    assert source.read_text(encoding="utf-8") == "read-only payload"
