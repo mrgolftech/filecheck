@@ -4,12 +4,11 @@ from . import menu
 from . import resilient_cli
 
 
-# Reuse the established menu layout while routing its command execution through
-# the resumable backup/migration implementation.  This keeps all existing scan,
-# doctor, verify, restore and selftest behavior intact.
+# Route command execution and resume handling through the resumable implementation.
+# The menu layout itself stays owned by menu.py so backup/verify/delete/restore
+# remain one coherent user-facing workflow.
 menu.cli = resilient_cli
 menu._resume_flow = resilient_cli.menu_resume_flow
-menu._print_main_menu = resilient_cli.menu_print_main_menu
 
 
 def main(argv: list[str] | None = None) -> int:
