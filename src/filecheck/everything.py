@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -66,17 +67,13 @@ def find_es(explicit: str | None = None) -> Path:
     )
 
 
-def _run(
-    es_path: Path,
-    args: list[str],
-    timeout: int = 30,
-    *,
-    argv_mode: bool = False,
-) -> str:
-    creationflags = 0
+def _creationflags() -> int:
     if os.name == "nt":
-        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        return getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    return 0
 
+
+def _build_command(es_path: Path, args: list[str], *, argv_mode: bool) -> list[str]:
     # ES <= 1.1.0.36 used a custom Windows command-line parser which can split
     # arguments produced by Python/PowerShell incorrectly. ES 1.1.0.37 added
     # -argv to opt into CommandLineToArgvW. It must be the first ES parameter.
@@ -84,23 +81,93 @@ def _run(
     if argv_mode:
         command.append("-argv")
     command.extend(args)
+    return command
 
+
+def _raise_for_es_error(proc: subprocess.CompletedProcess[bytes], stdout: str, stderr: str) -> None:
+    if proc.returncode == 0:
+        return
+    detail = stderr or stdout or f"exit={proc.returncode}"
+    if proc.returncode in (7, 8):
+        detail += "；请确认 Everything 1.4 已启动且索引已加载"
+    raise EverythingError(detail)
+
+
+def _run(
+    es_path: Path,
+    args: list[str],
+    timeout: int = 30,
+    *,
+    argv_mode: bool = False,
+) -> str:
+    command = _build_command(es_path, args, argv_mode=argv_mode)
     proc = subprocess.run(
         command,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         timeout=timeout,
-        creationflags=creationflags,
+        creationflags=_creationflags(),
         check=False,
     )
     stdout = _decode(proc.stdout).strip()
     stderr = _decode(proc.stderr).strip()
-    if proc.returncode != 0:
-        detail = stderr or stdout or f"exit={proc.returncode}"
-        if proc.returncode in (7, 8):
-            detail += "；请确认 Everything 1.4 已启动且索引已加载"
-        raise EverythingError(detail)
+    _raise_for_es_error(proc, stdout, stderr)
     return stdout
+
+
+def _run_export_txt(
+    es_path: Path,
+    args: list[str],
+    timeout: int = 60,
+    *,
+    argv_mode: bool = True,
+) -> str:
+    """Run an ES search through its UTF-8 text export path.
+
+    ES console stdout is constrained by the active Windows console code page.
+    Characters that are not representable there can already be replaced with
+    '?' before Python receives stdout. That is irreversible and can corrupt a
+    filename in scan-results.json. Exporting to a UTF-8 file avoids the console
+    encoding boundary and preserves the exact Unicode path.
+    """
+
+    with tempfile.TemporaryDirectory(prefix="filecheck-es-") as temp_dir:
+        export_path = Path(temp_dir) / "results.txt"
+
+        # Keep the search expression as the final argument. ES accepts export
+        # options alongside a search, and -utf8-bom makes the export encoding
+        # explicit and unambiguous for us to decode.
+        if args:
+            export_args = [
+                *args[:-1],
+                "-export-txt",
+                str(export_path),
+                "-utf8-bom",
+                args[-1],
+            ]
+        else:
+            export_args = ["-export-txt", str(export_path), "-utf8-bom"]
+
+        command = _build_command(es_path, export_args, argv_mode=argv_mode)
+        proc = subprocess.run(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=timeout,
+            creationflags=_creationflags(),
+            check=False,
+        )
+        stdout = _decode(proc.stdout).strip()
+        stderr = _decode(proc.stderr).strip()
+        _raise_for_es_error(proc, stdout, stderr)
+
+        if not export_path.exists():
+            raise EverythingError("ES 查询成功但未生成 UTF-8 导出结果文件")
+
+        try:
+            return export_path.read_bytes().decode("utf-8-sig").strip()
+        except UnicodeDecodeError as exc:
+            raise EverythingError("ES 导出结果不是有效的 UTF-8 文本") from exc
 
 
 def _version_tuple(value: str) -> tuple[int, ...]:
@@ -163,7 +230,10 @@ def search_keyword(
         args.extend(["-path", str(Path(path_prefix).expanduser())])
     args.append(query)
 
-    output = _run(es_path, args, timeout=60, argv_mode=True)
+    # Do not consume search result paths from ES console stdout. On Windows the
+    # console code page can replace legitimate Unicode filename characters with
+    # '?'. The UTF-8 export path preserves exact NTFS names such as NBSP/emoji.
+    output = _run_export_txt(es_path, args, timeout=60, argv_mode=True)
     prefix = os.path.normcase(os.path.abspath(path_prefix)) if path_prefix else None
     results: list[Path] = []
     for line in output.splitlines():
