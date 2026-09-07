@@ -4,10 +4,11 @@ import hashlib
 import json
 import os
 import shutil
+import stat
 import uuid
 import zipfile
 from pathlib import Path, PureWindowsPath
-from typing import BinaryIO, Iterable
+from typing import BinaryIO, Callable, Iterable
 
 from .util import backup_relpath, choose_renamed_path, make_batch_id, now_iso, sha256_file, write_json
 
@@ -16,8 +17,15 @@ class BackupError(RuntimeError):
     pass
 
 
+ProgressCallback = Callable[[str, int, int, str], None]
+
 _MIN_FREE_RESERVE = 16 * 1024 * 1024
 _MAX_FREE_RESERVE = 512 * 1024 * 1024
+
+
+def _notify(progress: ProgressCallback | None, stage: str, current: int, total: int, path: str | Path) -> None:
+    if progress is not None:
+        progress(stage, current, total, str(path))
 
 
 def _is_within(child: Path, parent: Path) -> bool:
@@ -69,9 +77,32 @@ def _stream_sha256(stream: BinaryIO, chunk_size: int = 1024 * 1024) -> str:
 
 
 def _sync_file(path: Path) -> None:
-    """Flush a completed file through Python's platform fsync primitive."""
-    with path.open("rb") as fh:
-        os.fsync(fh.fileno())
+    """Flush file data using a writable handle on Windows/POSIX.
+
+    Windows rejects ``os.fsync`` on a read-only descriptor. ``shutil.copy2`` may
+    also preserve a source read-only attribute onto the temporary copy, so this
+    helper temporarily enables owner-write only when required, flushes the file,
+    and restores the original mode before returning.
+    """
+
+    def flush_with_write_handle() -> None:
+        with path.open("r+b") as fh:
+            fh.flush()
+            os.fsync(fh.fileno())
+
+    try:
+        flush_with_write_handle()
+        return
+    except PermissionError:
+        original_mode = path.stat().st_mode
+        try:
+            path.chmod(original_mode | stat.S_IWRITE)
+            flush_with_write_handle()
+        finally:
+            try:
+                path.chmod(original_mode)
+            except OSError:
+                pass
 
 
 def _estimate_required_bytes(files: Iterable[Path], *, zip_mode: bool) -> tuple[int, int]:
@@ -170,7 +201,7 @@ def _read_manifest_from_zip(zf: zipfile.ZipFile) -> dict:
     return manifest
 
 
-def verify_backup(source: str | Path) -> dict:
+def verify_backup(source: str | Path, *, progress: ProgressCallback | None = None) -> dict:
     """Verify every backed-up payload against its original SHA-256 manifest."""
     source = Path(source).expanduser()
     if not source.exists():
@@ -178,7 +209,8 @@ def verify_backup(source: str | Path) -> dict:
 
     if source.is_dir():
         manifest = _read_manifest_from_dir(source)
-        for item in manifest["items"]:
+        total = len(manifest["items"])
+        for index, item in enumerate(manifest["items"], start=1):
             stored = source / Path(str(item["backup_path"]).replace("/", os.sep))
             if not stored.is_file():
                 raise BackupError(f"备份文件缺失: {stored}")
@@ -186,6 +218,7 @@ def verify_backup(source: str | Path) -> dict:
                 raise BackupError(f"备份文件大小不一致: {stored}")
             if sha256_file(stored).lower() != item["sha256"].lower():
                 raise BackupError(f"备份文件 SHA-256 不一致: {stored}")
+            _notify(progress, "verify", index, total, stored)
         return manifest
 
     if not zipfile.is_zipfile(source):
@@ -197,7 +230,8 @@ def verify_backup(source: str | Path) -> dict:
                 raise BackupError(f"ZIP CRC 完整性检查失败: {bad}")
             manifest = _read_manifest_from_zip(zf)
             names = set(zf.namelist())
-            for item in manifest["items"]:
+            total = len(manifest["items"])
+            for index, item in enumerate(manifest["items"], start=1):
                 member = str(item["backup_path"]).replace("\\", "/")
                 if member not in names:
                     raise BackupError(f"ZIP 中缺少备份文件: {member}")
@@ -208,6 +242,7 @@ def verify_backup(source: str | Path) -> dict:
                     digest = _stream_sha256(stream)
                 if digest.lower() != item["sha256"].lower():
                     raise BackupError(f"ZIP 文件 SHA-256 不一致: {member}")
+                _notify(progress, "verify", index, total, member)
             return manifest
     except zipfile.BadZipFile as exc:
         raise BackupError(f"ZIP 备份损坏或不可读: {source}") from exc
@@ -266,8 +301,9 @@ def create_backup(
     destination_root: str | Path,
     *,
     zip_mode: bool = False,
+    progress: ProgressCallback | None = None,
 ) -> Path:
-    """Create and fully verify a backup. V0.1 never removes source files."""
+    """Create and fully verify a backup. This function never removes source files."""
     destination_root = Path(destination_root).expanduser().resolve()
     destination_root.mkdir(parents=True, exist_ok=True)
     files = _collect_files(sources, destination_root)
@@ -297,22 +333,24 @@ def create_backup(
 
     completed = False
     try:
-        for source in files:
+        total = len(files)
+        for index, source in enumerate(files, start=1):
             source = source.resolve()
             rel = backup_relpath(source)
             target = staging / rel
-            source_hash, stat = _atomic_copy_to_backup(source, target)
+            source_hash, source_stat = _atomic_copy_to_backup(source, target)
             manifest["items"].append(
                 {
                     "source_path": str(source),
                     "backup_path": rel.as_posix(),
-                    "size": stat.st_size,
-                    "mtime_ns": stat.st_mtime_ns,
+                    "size": source_stat.st_size,
+                    "mtime_ns": source_stat.st_mtime_ns,
                     "sha256": source_hash,
                     "backup_verified": True,
                     "source_removed": False,
                 }
             )
+            _notify(progress, "copy", index, total, source)
 
         write_json(staging / "manifest.json", manifest)
         verify_backup(staging)
@@ -405,7 +443,12 @@ def _preflight_restore_targets(items: list[dict]) -> None:
         raise BackupError(f"以下原始驱动器/共享当前不可用，尚未开始恢复: {', '.join(unavailable)}")
 
 
-def restore_backup(source: str | Path, *, conflict: str = "skip") -> list[dict]:
+def restore_backup(
+    source: str | Path,
+    *,
+    conflict: str = "skip",
+    progress: ProgressCallback | None = None,
+) -> list[dict]:
     source = Path(source).expanduser()
     # Safety invariant: verify the entire backup before touching any target.
     manifest = verify_backup(source)
@@ -413,18 +456,21 @@ def restore_backup(source: str | Path, *, conflict: str = "skip") -> list[dict]:
     _preflight_restore_targets(items)
 
     results: list[dict] = []
+    total = len(items)
     if source.is_dir():
-        for item in items:
+        for index, item in enumerate(items, start=1):
             stored = source / Path(str(item["backup_path"]).replace("/", os.sep))
-            target, state = _restore_one_from_file(stored, item, conflict)
-            results.append({"target": target, "state": state})
+            target, state_value = _restore_one_from_file(stored, item, conflict)
+            results.append({"target": target, "state": state_value})
+            _notify(progress, "restore", index, total, target)
         return results
 
     with zipfile.ZipFile(source, "r") as zf:
-        for item in items:
+        for index, item in enumerate(items, start=1):
             target = _resolve_conflict(Path(item["source_path"]), conflict)
             if target is None:
                 results.append({"target": item["source_path"], "state": "skipped"})
+                _notify(progress, "restore", index, total, item["source_path"])
                 continue
             target.parent.mkdir(parents=True, exist_ok=True)
             member = str(item["backup_path"]).replace("\\", "/")
@@ -441,4 +487,5 @@ def restore_backup(source: str | Path, *, conflict: str = "skip") -> list[dict]:
                 except OSError:
                     pass
             results.append({"target": str(target), "state": "restored"})
+            _notify(progress, "restore", index, total, target)
     return results
