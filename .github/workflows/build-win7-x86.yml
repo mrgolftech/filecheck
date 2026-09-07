@@ -76,16 +76,7 @@ jobs:
       - name: Verify FileCheck.exe is x86 PE
         shell: pwsh
         run: |
-          python - <<'PY'
-          from pathlib import Path
-          import struct
-          p = Path('dist/FileCheck.exe')
-          data = p.read_bytes()
-          pe = struct.unpack_from('<I', data, 0x3C)[0]
-          machine = struct.unpack_from('<H', data, pe + 4)[0]
-          print(f'PE machine=0x{machine:04X}')
-          assert machine == 0x014C, 'FileCheck.exe is not x86'
-          PY
+          python -c "from pathlib import Path; import struct; data=Path('dist/FileCheck.exe').read_bytes(); pe=struct.unpack_from('<I',data,0x3c)[0]; machine=struct.unpack_from('<H',data,pe+4)[0]; print(f'PE machine=0x{machine:04X}'); assert machine == 0x014C, 'FileCheck.exe is not x86'"
 
       - name: Smoke test executable on runner
         shell: pwsh
