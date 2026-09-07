@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -17,8 +18,15 @@ def test_search_keyword_builds_query_and_filters_path(tmp_path: Path, monkeypatc
 
     captured: dict[str, object] = {}
 
-    def fake_run(es_path: Path, args: list[str], timeout: int = 30) -> str:
+    def fake_run(
+        es_path: Path,
+        args: list[str],
+        timeout: int = 30,
+        *,
+        argv_mode: bool = False,
+    ) -> str:
         captured["args"] = args
+        captured["argv_mode"] = argv_mode
         return f"{inside}\n{outside}\n"
 
     monkeypatch.setattr(everything, "_run", fake_run)
@@ -33,11 +41,28 @@ def test_search_keyword_builds_query_and_filters_path(tmp_path: Path, monkeypatc
     assert result == [inside]
     args = captured["args"]
     assert isinstance(args, list)
+    assert captured["argv_mode"] is True
     assert "-p" in args
     assert "-path" in args
     assert "/a-d" in args
-    assert "-full-path" in args
+    assert "-full-path-and-name" in args
     assert '"机密" ext:txt;docx' in args
+
+
+def test_run_argv_mode_places_switch_first(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_subprocess_run(command, **kwargs):
+        captured["command"] = command
+        return SimpleNamespace(returncode=0, stdout=b"ok", stderr=b"")
+
+    monkeypatch.setattr(everything.subprocess, "run", fake_subprocess_run)
+    output = everything._run(Path("es.exe"), ["-path", r"C:\Test", "机密 ext:txt"], argv_mode=True)
+    assert output == "ok"
+    command = captured["command"]
+    assert command[0] == "es.exe"
+    assert command[1] == "-argv"
+    assert command[2:] == ["-path", r"C:\Test", "机密 ext:txt"]
 
 
 def test_scan_keywords_deduplicates_and_uses_highest_severity(
@@ -68,13 +93,28 @@ def test_get_status_rejects_non_14(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
     es.write_bytes(b"")
     monkeypatch.setattr(everything, "find_es", lambda explicit=None: es)
 
-    def fake_run(es_path: Path, args: list[str], timeout: int = 30) -> str:
+    def fake_run(es_path: Path, args: list[str], timeout: int = 30, *, argv_mode: bool = False) -> str:
         if args == ["-version"]:
             return "1.1.0.37"
         return "1.5.0.1423b"
 
     monkeypatch.setattr(everything, "_run", fake_run)
     with pytest.raises(everything.EverythingError, match="1.4.x"):
+        everything.get_status()
+
+
+def test_get_status_rejects_old_es(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    es = tmp_path / "es.exe"
+    es.write_bytes(b"")
+    monkeypatch.setattr(everything, "find_es", lambda explicit=None: es)
+
+    def fake_run(es_path: Path, args: list[str], timeout: int = 30, *, argv_mode: bool = False) -> str:
+        if args == ["-version"]:
+            return "1.1.0.36"
+        return "1.4.1.877"
+
+    monkeypatch.setattr(everything, "_run", fake_run)
+    with pytest.raises(everything.EverythingError, match="1.1.0.37"):
         everything.get_status()
 
 
