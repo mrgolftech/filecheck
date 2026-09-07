@@ -6,6 +6,8 @@ import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 
+from colorama import Fore, Style, just_fix_windows_console
+
 from .backup import BackupError, create_backup, restore_backup, verify_backup
 from .everything import EverythingError, get_status, scan_keywords
 from .selftest import run_selftest
@@ -13,7 +15,8 @@ from .util import now_iso, write_json
 
 
 def _configure_console_streams() -> None:
-    """Keep localized output from crashing on non-Chinese Windows code pages."""
+    """Keep localized/color output working on Windows consoles."""
+    just_fix_windows_console()
     for stream in (sys.stdout, sys.stderr):
         reconfigure = getattr(stream, "reconfigure", None)
         if reconfigure is not None:
@@ -21,6 +24,31 @@ def _configure_console_streams() -> None:
                 reconfigure(errors="replace")
             except (OSError, ValueError):
                 pass
+
+
+def _paint(text: str, color: str = "", *, bright: bool = False) -> str:
+    prefix = (Style.BRIGHT if bright else "") + color
+    return f"{prefix}{text}{Style.RESET_ALL}"
+
+
+def _severity_text(level: str) -> str:
+    if level == "high":
+        return _paint(f"{level:<9}", Fore.RED, bright=True)
+    if level == "sensitive":
+        return _paint(f"{level:<9}", Fore.YELLOW, bright=True)
+    return _paint(f"{level:<9}", Fore.CYAN)
+
+
+def _success(text: str) -> str:
+    return _paint(text, Fore.GREEN, bright=True)
+
+
+def _warning(text: str) -> str:
+    return _paint(text, Fore.YELLOW, bright=True)
+
+
+def _info(text: str) -> str:
+    return _paint(text, Fore.CYAN)
 
 
 def _load_rules(path: str | Path) -> dict:
@@ -36,22 +64,23 @@ def _load_rules(path: str | Path) -> dict:
 
 def cmd_doctor(args: argparse.Namespace) -> int:
     status = get_status(args.es)
-    print("Everything 环境检查通过")
-    print(f"  es.exe: {status.es_path}")
-    print(f"  ES CLI: {status.es_version}")
-    print(f"  Everything: {status.everything_version}")
+    print(_success("Everything 环境检查通过"))
+    print(f"  es.exe: {_info(status.es_path)}")
+    print(f"  ES CLI: {_info(status.es_version)}")
+    print(f"  Everything: {_info(status.everything_version)}")
     return 0
 
 
 def _print_scan(items: list[dict]) -> None:
     counts = Counter(item["severity"] for item in items)
-    print(f"\n共发现 {len(items)} 个候选文件")
+    print(f"\n{Style.BRIGHT}共发现 {len(items)} 个候选文件{Style.RESET_ALL}")
     print(
-        "  high={high}  sensitive={sensitive}  review={review}".format(
-            high=counts.get("high", 0),
-            sensitive=counts.get("sensitive", 0),
-            review=counts.get("review", 0),
-        )
+        "  "
+        + _paint(f"high={counts.get('high', 0)}", Fore.RED, bright=True)
+        + "  "
+        + _paint(f"sensitive={counts.get('sensitive', 0)}", Fore.YELLOW, bright=True)
+        + "  "
+        + _paint(f"review={counts.get('review', 0)}", Fore.CYAN)
     )
 
     grouped: dict[str, list[tuple[int, dict]]] = defaultdict(list)
@@ -59,16 +88,24 @@ def _print_scan(items: list[dict]) -> None:
         grouped[item["directory"]].append((index, item))
 
     for directory, rows in grouped.items():
-        print(f"\n[{directory}]  ({len(rows)} 个)")
+        print(f"\n{_info(f'[{directory}]')}  ({len(rows)} 个)")
         for index, item in rows:
             keywords = ", ".join(item["matched_keywords"])
-            print(f"  {index:>5}. [{item['severity']:<9}] {Path(item['path']).name}  <{keywords}>")
+            severity = _severity_text(item["severity"])
+            filename = Path(item["path"]).name
+            print(
+                f"  {index:>5}. [{severity}] "
+                f"{filename}  {_paint(f'<{keywords}>', Fore.MAGENTA)}"
+            )
 
 
 def cmd_scan(args: argparse.Namespace) -> int:
     rules = _load_rules(args.rules)
     status = get_status(args.es)
-    print(f"使用 Everything {status.everything_version} / ES {status.es_version}")
+    print(
+        f"使用 Everything {_info(status.everything_version)} / "
+        f"ES {_info(status.es_version)}"
+    )
     print("正在按关键词查询 Everything 索引……")
     items = scan_keywords(
         rules["keywords"],
@@ -92,8 +129,8 @@ def cmd_scan(args: argparse.Namespace) -> int:
         "items": items,
     }
     write_json(output, payload)
-    print(f"\n扫描结果已保存: {output.resolve()}")
-    print("注意：结果仅表示关键词命中，需要人工复核。")
+    print(f"\n扫描结果已保存: {_info(str(output.resolve()))}")
+    print(_warning("注意：结果仅表示关键词命中，需要人工复核。"))
     return 0
 
 
@@ -135,17 +172,19 @@ def cmd_backup(args: argparse.Namespace) -> int:
 
     result = create_backup(sources, args.dest, zip_mode=args.zip)
     manifest = verify_backup(result)
-    print(f"备份完成并通过全量 SHA-256 校验: {result.resolve()}")
-    print(f"文件数: {len(manifest['items'])}")
-    print("V0.1 为安全起见不会自动移除原文件；请先完成恢复演练和人工确认。")
+    print(_success("备份完成并通过全量 SHA-256 校验"))
+    print(f"  路径: {_info(str(result.resolve()))}")
+    print(f"  文件数: {len(manifest['items'])}")
+    print(_warning("V0.1 为安全起见不会自动移除原文件；请先完成恢复演练和人工确认。"))
     return 0
 
 
 def cmd_verify(args: argparse.Namespace) -> int:
     manifest = verify_backup(args.backup)
-    print(f"备份验证通过: {Path(args.backup).resolve()}")
-    print(f"批次: {manifest.get('batch_id', '-')}")
-    print(f"文件数: {len(manifest['items'])}")
+    print(_success("备份验证通过"))
+    print(f"  路径: {_info(str(Path(args.backup).resolve()))}")
+    print(f"  批次: {manifest.get('batch_id', '-')}")
+    print(f"  文件数: {len(manifest['items'])}")
     return 0
 
 
@@ -153,15 +192,18 @@ def cmd_restore(args: argparse.Namespace) -> int:
     results = restore_backup(args.backup, conflict=args.conflict)
     restored = sum(1 for row in results if row["state"] == "restored")
     skipped = sum(1 for row in results if row["state"] == "skipped")
-    print(f"恢复完成：restored={restored}, skipped={skipped}")
+    print(_success("恢复完成"))
+    print(f"  restored={_paint(str(restored), Fore.GREEN, bright=True)}")
+    print(f"  skipped={_paint(str(skipped), Fore.YELLOW)}")
     return 0
 
 
 def cmd_selftest(args: argparse.Namespace) -> int:
     report = run_selftest()
     for name, state in report.items():
-        print(f"{name}: {state}")
-    print("FileCheck 备份/验证/恢复自检通过。")
+        color = Fore.GREEN if str(state).startswith("PASS") else Fore.YELLOW
+        print(f"{name}: {_paint(str(state), color, bright=True)}")
+    print(_success("FileCheck 备份/验证/恢复自检通过。"))
     return 0
 
 
@@ -218,7 +260,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return int(args.func(args) or 0)
     except (EverythingError, BackupError, RuntimeError, ValueError, OSError) as exc:
-        print(f"错误: {exc}", file=sys.stderr)
+        print(_paint(f"错误: {exc}", Fore.RED, bright=True), file=sys.stderr)
         return 1
 
 
