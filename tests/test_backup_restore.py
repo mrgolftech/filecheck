@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import shutil
-import zipfile
 from pathlib import Path
 
 import pytest
@@ -35,15 +34,17 @@ def assert_expected(expected: dict[str, str]) -> None:
         assert sha256_file(path) == digest, raw
 
 
-@pytest.mark.parametrize("zip_mode", [False, True])
-def test_roundtrip_backup_restore(tmp_path: Path, zip_mode: bool) -> None:
+def test_roundtrip_backup_restore(tmp_path: Path) -> None:
     source = tmp_path / "src"
     source.mkdir()
     expected = make_tree(source)
-    backup = create_backup([source], tmp_path / "backup", zip_mode=zip_mode)
+    backup = create_backup([source], tmp_path / "backup")
 
     manifest = verify_backup(backup)
+    assert manifest["mode"] == "directory"
     assert len(manifest["items"]) == len(expected)
+    assert "source_removed" not in manifest
+    assert all("source_removed" not in item for item in manifest["items"])
 
     shutil.rmtree(source)
     results = restore_backup(backup)
@@ -51,12 +52,11 @@ def test_roundtrip_backup_restore(tmp_path: Path, zip_mode: bool) -> None:
     assert_expected(expected)
 
 
-@pytest.mark.parametrize("zip_mode", [False, True])
-def test_skip_and_overwrite_conflicts(tmp_path: Path, zip_mode: bool) -> None:
+def test_skip_and_overwrite_conflicts(tmp_path: Path) -> None:
     source = tmp_path / "src"
     source.mkdir()
     expected = make_tree(source)
-    backup = create_backup([source], tmp_path / "backup", zip_mode=zip_mode)
+    backup = create_backup([source], tmp_path / "backup")
 
     target = source / "a.txt"
     target.write_bytes(b"local change")
@@ -67,13 +67,12 @@ def test_skip_and_overwrite_conflicts(tmp_path: Path, zip_mode: bool) -> None:
     assert_expected(expected)
 
 
-@pytest.mark.parametrize("zip_mode", [False, True])
-def test_rename_conflict(tmp_path: Path, zip_mode: bool) -> None:
+def test_rename_conflict(tmp_path: Path) -> None:
     source = tmp_path / "src"
     source.mkdir()
     original = source / "a.txt"
     original.write_bytes(b"alpha")
-    backup = create_backup([original], tmp_path / "backup", zip_mode=zip_mode)
+    backup = create_backup([original], tmp_path / "backup")
 
     original.write_bytes(b"local")
     result = restore_backup(backup, conflict="rename")
@@ -87,7 +86,7 @@ def test_corrupted_directory_backup_is_rejected_before_restore(tmp_path: Path) -
     source = tmp_path / "src"
     source.mkdir()
     expected = make_tree(source)
-    backup = create_backup([source], tmp_path / "backup", zip_mode=False)
+    backup = create_backup([source], tmp_path / "backup")
     manifest = verify_backup(backup)
 
     first = manifest["items"][0]
@@ -102,26 +101,27 @@ def test_corrupted_directory_backup_is_rejected_before_restore(tmp_path: Path) -
     assert len(expected) == len(manifest["items"])
 
 
-def test_zip_crc_valid_but_sha_invalid_is_rejected(tmp_path: Path) -> None:
+def test_extracted_legacy_zip_manifest_is_accepted_as_directory(tmp_path: Path) -> None:
     source = tmp_path / "src"
     source.mkdir()
-    file = source / "a.txt"
-    file.write_bytes(b"alpha")
-    archive = create_backup([file], tmp_path / "backup", zip_mode=True)
-    manifest = verify_backup(archive)
-    member = manifest["items"][0]["backup_path"]
+    expected = make_tree(source)
+    backup = create_backup([source], tmp_path / "backup")
+    manifest_path = backup / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["mode"] = "zip"  # v0.1.0 archive after the user has extracted it
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    replacement = tmp_path / "replacement.zip"
-    with zipfile.ZipFile(archive, "r") as src, zipfile.ZipFile(replacement, "w", zipfile.ZIP_DEFLATED) as dst:
-        for info in src.infolist():
-            if info.filename == member:
-                dst.writestr(info.filename, b"bravo")  # same length; ZIP CRC itself is valid
-            else:
-                dst.writestr(info, src.read(info.filename))
-    replacement.replace(archive)
+    verify_backup(backup)
+    shutil.rmtree(source)
+    restore_backup(backup)
+    assert_expected(expected)
 
-    with pytest.raises(BackupError, match="SHA-256"):
-        verify_backup(archive)
+
+def test_zip_file_input_is_not_supported(tmp_path: Path) -> None:
+    fake_zip = tmp_path / "old.zip"
+    fake_zip.write_bytes(b"PK")
+    with pytest.raises(BackupError, match="目录备份"):
+        verify_backup(fake_zip)
 
 
 def test_destination_inside_source_is_rejected(tmp_path: Path) -> None:
@@ -142,6 +142,27 @@ def test_overlapping_selection_is_deduplicated(tmp_path: Path) -> None:
     assert len(manifest["items"]) == 1
 
 
+def test_same_filename_in_different_paths_are_all_preserved(tmp_path: Path) -> None:
+    first = tmp_path / "C-tree" / "ProjectA" / "报告.pdf"
+    second = tmp_path / "C-tree" / "ProjectB" / "报告.pdf"
+    third = tmp_path / "D-tree" / "资料" / "报告.pdf"
+    for index, path in enumerate((first, second, third), start=1):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(f"payload-{index}".encode())
+
+    backup = create_backup([first, second, third], tmp_path / "backup")
+    manifest = verify_backup(backup)
+    assert len(manifest["items"]) == 3
+    backup_paths = [item["backup_path"] for item in manifest["items"]]
+    assert len(set(backup_paths)) == 3
+
+    expected = {str(path.resolve()): sha256_file(path) for path in (first, second, third)}
+    for path in (first, second, third):
+        path.unlink()
+    restore_backup(backup)
+    assert_expected(expected)
+
+
 def test_source_change_during_copy_aborts_backup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     source = tmp_path / "src.txt"
     source.write_bytes(b"original")
@@ -157,7 +178,6 @@ def test_source_change_during_copy_aborts_backup(tmp_path: Path, monkeypatch: py
     with pytest.raises(BackupError, match="发生变化"):
         create_backup([source], destination)
 
-    # No completed manifest/backup is allowed after an inconsistent copy.
     manifests = list(destination.rglob("manifest.json")) if destination.exists() else []
     assert manifests == []
 
