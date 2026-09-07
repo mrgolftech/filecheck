@@ -209,7 +209,7 @@ def _environment_and_index_flow() -> int:
     drives = list_windows_drives()
     if not drives:
         print(cli._warning("未自动枚举到 Windows 磁盘，请手工输入要索引的根目录。"))
-        raw = _ask(r"请输入索引范围，多个用逗号分隔，例如 C:\,D:\")
+        raw = _ask("请输入索引范围，多个用逗号分隔，例如 C:,D:")
         selected = [item.strip() for item in raw.split(",") if item.strip()]
     else:
         print("\n请选择需要建立 FileCheck 索引的磁盘：")
