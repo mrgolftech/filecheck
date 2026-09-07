@@ -1,16 +1,22 @@
-FileCheck Win64 v0.1.0
-=====================
+FileCheck v0.1.0 - Windows 10/11 x64 package
+=============================================
+
+适用系统
+--------
+- Windows 10 64 位。
+- Windows 11 64 位。
+- Windows 7 SP1 64 位请使用单独的 FileCheck-v0.1.0-win7-x64.zip 兼容包。
 
 运行方式
 --------
-1. 建议解压整个 FileCheck-win64.zip 后使用，不要直接在压缩包内运行。
+1. 建议解压整个 FileCheck-v0.1.0-win10plus-x64.zip 后使用，不要直接在压缩包内运行。
 2. 双击 FileCheck.exe 或在 PowerShell/CMD 中运行 FileCheck.exe。
 3. 无参数启动时进入交互式菜单；高级用户仍可使用 scan/backup/migrate/verify/restore 等子命令。
 
 Everything / ES CLI
 -------------------
 FileCheck 依赖本机 Everything 1.4.x 和 ES CLI 1.1.0.37+。
-V0.1.0 Win64 发布包已经内置官方 ES CLI 1.1.0.37 x64：
+V0.1.0 Windows 10/11 x64 发布包已经内置官方 ES CLI 1.1.0.37 x64：
 
   tools\es.exe
 
