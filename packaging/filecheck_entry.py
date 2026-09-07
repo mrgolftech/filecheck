@@ -48,7 +48,7 @@ def _bootstrap_frozen_runtime() -> None:
 
 _bootstrap_frozen_runtime()
 
-from filecheck.menu import main  # noqa: E402
+from filecheck.launcher import main  # noqa: E402
 
 
 if __name__ == "__main__":
