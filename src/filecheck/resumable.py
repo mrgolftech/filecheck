@@ -5,13 +5,7 @@ import shutil
 from pathlib import Path
 from typing import Iterable
 
-from .backup import (
-    BackupError,
-    ProgressCallback,
-    _atomic_copy_to_backup,
-    _create_zip_from_staging,
-    verify_backup,
-)
+from .backup import BackupError, ProgressCallback, _atomic_copy_to_backup, verify_backup
 from .util import app_data_dir, backup_relpath, make_batch_id, now_iso, read_json, sha256_file, write_json
 
 
@@ -27,18 +21,9 @@ def _notify(progress: ProgressCallback | None, stage: str, current: int, total: 
 
 
 def _io_path(path: str | Path) -> Path:
-    """Return a Windows extended-length path for actual file I/O.
-
-    Backup payloads deliberately preserve the source directory tree for manual
-    inspection.  That mirrored destination can become longer than the original
-    source path, so actual Windows I/O uses the extended-length prefix while the
-    manifest and visible backup tree keep ordinary human-readable paths.
-    """
-
     path = Path(path)
     if os.name != "nt":
         return path
-
     raw = os.path.abspath(str(path))
     if raw.startswith("\\\\?\\"):
         return Path(raw)
@@ -71,34 +56,22 @@ def _is_within_text(child: str, parent: str) -> bool:
 
 
 def _expand_sources(sources: Iterable[str | Path], destination_root: Path) -> list[str]:
-    """Expand explicit directories while retaining missing indexed file paths.
-
-    scan-results.json can legitimately contain an indexed path that disappears
-    before backup begins.  We keep such file entries in the operation plan so
-    the batch reports the exact failure and can retry after the user fixes the
-    condition, rather than failing before a resumable state exists.
-    """
-
     result: list[str] = []
     seen: set[str] = set()
     dest_text = os.path.abspath(str(destination_root))
-
     for raw in sources:
         source_text = _absolute_source_text(raw)
         source_io = _io_path(source_text)
-
         try:
             is_link = source_io.is_symlink()
         except OSError:
             is_link = False
         if is_link:
-            raise BackupError(f"V0.1 不处理符号链接/重解析入口: {source_text}")
-
+            raise BackupError(f"不处理符号链接/重解析入口: {source_text}")
         try:
             is_dir = source_io.is_dir()
         except OSError:
             is_dir = False
-
         if is_dir:
             if _is_within_text(dest_text, source_text):
                 raise BackupError(f"备份目标不能位于待备份源目录内部: {source_text}")
@@ -125,25 +98,16 @@ def _expand_sources(sources: Iterable[str | Path], destination_root: Path) -> li
                         seen.add(key)
                         result.append(os.path.abspath(candidate_text))
             continue
-
         key = os.path.normcase(source_text)
         if key not in seen:
             seen.add(key)
             result.append(source_text)
-
     if not result:
         raise BackupError("没有可备份的普通文件")
     return result
 
 
 def _mirrored_backup_relpath(source_text: str) -> Path:
-    """Keep the source drive/directory/file layout inside ``files/``.
-
-    Example: ``G:\\work\\a.pdf`` becomes ``files/G/work/a.pdf``.  The readable
-    layout is intentional: users can inspect a directory backup without needing
-    FileCheck or manifest lookup to understand where a file came from.
-    """
-
     return backup_relpath(Path(source_text))
 
 
@@ -151,12 +115,8 @@ def operation_state_path(batch_id: str) -> Path:
     return app_data_dir() / "operations" / f"{batch_id}.operation.json"
 
 
-def _operation_paths(destination_root: Path, batch_id: str) -> tuple[Path, Path, Path]:
-    return (
-        destination_root / f".{batch_id}.incomplete",
-        destination_root / batch_id,
-        destination_root / f"{batch_id}.zip",
-    )
+def _operation_paths(destination_root: Path, batch_id: str) -> tuple[Path, Path]:
+    return destination_root / f".{batch_id}.incomplete", destination_root / batch_id
 
 
 def _validate_batch_id(batch_id: str) -> str:
@@ -165,14 +125,7 @@ def _validate_batch_id(batch_id: str) -> str:
     return batch_id
 
 
-def _new_state(
-    sources: list[str],
-    destination_root: Path,
-    *,
-    batch_id: str,
-    zip_mode: bool,
-    operation: str,
-) -> dict:
+def _new_state(sources: list[str], destination_root: Path, *, batch_id: str, operation: str) -> dict:
     created = now_iso()
     items = []
     for source_text in sources:
@@ -196,7 +149,6 @@ def _new_state(
                 "error": None,
             }
         )
-
     return {
         "schema_version": _OPERATION_SCHEMA_VERSION,
         "kind": "filecheck-operation",
@@ -206,7 +158,6 @@ def _new_state(
         "updated_at": created,
         "status": "copying",
         "destination_root": str(destination_root),
-        "zip_mode": bool(zip_mode),
         "storage_layout": "mirrored-source-tree-v1",
         "backup_path": None,
         "last_error": None,
@@ -246,8 +197,6 @@ def load_operation_state(state_path: str | Path) -> dict:
         raise BackupError(f"未知操作类型: {state.get('operation')}")
     if not isinstance(state.get("items"), list) or not state["items"]:
         raise BackupError("操作状态中没有有效 items")
-    if Path(str(state.get("destination_root", ""))).expanduser().resolve() == Path("").resolve():
-        raise BackupError("操作状态缺少有效 destination_root")
     state["batch_id"] = batch_id
     return state
 
@@ -275,7 +224,7 @@ def _capacity_check(destination_root: Path, state: dict) -> None:
         if isinstance(row.get("planned_size"), int) and row["planned_size"] >= 0
     )
     reserve = max(_MIN_FREE_RESERVE, min(_MAX_FREE_RESERVE, known // 20))
-    required = known * (2 if state.get("zip_mode") else 1) + reserve
+    required = known + reserve
     try:
         free = int(shutil.disk_usage(destination_root).free)
     except OSError:
@@ -309,7 +258,6 @@ def _copy_one(staging: Path, row: dict) -> None:
     source_text = str(row["source_path"])
     source = _io_path(source_text)
     target = _io_path(_target_for(staging, row))
-
     try:
         if source.is_symlink():
             raise BackupError("源路径是符号链接/重解析入口")
@@ -320,7 +268,6 @@ def _copy_one(staging: Path, row: dict) -> None:
         digest, source_stat = _atomic_copy_to_backup(source, target)
     except (BackupError, OSError) as exc:
         raise BackupError(f"{source_text}: {exc}") from exc
-
     row["size"] = int(source_stat.st_size)
     row["mtime_ns"] = int(source_stat.st_mtime_ns)
     row["sha256"] = digest
@@ -337,8 +284,7 @@ def _manifest_from_state(state: dict) -> dict:
         "schema_version": 1,
         "batch_id": state["batch_id"],
         "created_at": state["created_at"],
-        "mode": "zip" if state.get("zip_mode") else "directory",
-        "source_removed": False,
+        "mode": "directory",
         "copy_strategy": "resumable-single-pass-sha256-v1",
         "storage_layout": state.get("storage_layout", "mirrored-source-tree-v1"),
         "source_bytes_total": total_bytes,
@@ -352,7 +298,6 @@ def _manifest_from_state(state: dict) -> dict:
                 "mtime_ns": int(row["mtime_ns"]),
                 "sha256": row["sha256"],
                 "backup_verified": True,
-                "source_removed": False,
             }
             for row in copied
         ],
@@ -369,67 +314,35 @@ def _first_failure_summary(state: dict) -> str:
     return f"首个失败: {first['source_path']} -> {first.get('error')}{suffix}"
 
 
-def _final_candidate(state: dict) -> Path:
-    destination_root = Path(str(state["destination_root"])).expanduser().resolve()
-    _, final_dir, archive = _operation_paths(destination_root, state["batch_id"])
-    return archive if state.get("zip_mode") else final_dir
-
-
-def _finish_verified_backup(
-    state_path: Path,
-    state: dict,
-    staging: Path,
-    *,
-    progress: ProgressCallback | None,
-) -> Path:
+def _finish_verified_backup(state_path: Path, state: dict, staging: Path, *, progress: ProgressCallback | None) -> Path:
     manifest = _manifest_from_state(state)
     write_json(staging / "manifest.json", manifest)
     state["status"] = "verifying"
     state["last_error"] = None
     save_operation_state(state_path, state)
-
     total = len(manifest["items"])
     _notify(progress, "verify_begin", 0, total, "")
-
     destination_root = Path(str(state["destination_root"])).expanduser().resolve()
-    _, final_dir, archive = _operation_paths(destination_root, state["batch_id"])
-
-    if state.get("zip_mode"):
-        _create_zip_from_staging(staging, archive, progress=progress)
-        shutil.rmtree(_io_path(staging))
-        result = archive
-    else:
-        verify_backup(_io_path(staging), progress=progress)
-        os.replace(_io_path(staging), _io_path(final_dir))
-        result = final_dir
-
-    state["backup_path"] = str(result)
+    _, final_dir = _operation_paths(destination_root, state["batch_id"])
+    verify_backup(_io_path(staging), progress=progress)
+    os.replace(_io_path(staging), _io_path(final_dir))
+    state["backup_path"] = str(final_dir)
     state["status"] = "backup_verified" if state.get("operation") == "migrate" else "completed"
     state["last_error"] = None
     save_operation_state(state_path, state)
-    return result
+    return final_dir
 
 
 def create_resumable_backup(
     sources: Iterable[str | Path],
     destination_root: str | Path,
     *,
-    zip_mode: bool = False,
     progress: ProgressCallback | None = None,
     operation: str = "backup",
     batch_id: str | None = None,
 ) -> tuple[Path, Path, dict]:
-    """Create a backup with a durable, user-resumable operation journal.
-
-    No final backup is published until every planned file has been copied and a
-    full SHA-256 verification has passed.  Per-file failures are collected so a
-    1,500-file run does not lose the first 1,499 successful copies merely because
-    the last file disappears or is temporarily inaccessible.
-    """
-
     if operation not in ("backup", "migrate"):
         raise BackupError(f"未知批处理操作: {operation}")
-
     destination = Path(destination_root).expanduser().resolve()
     destination.mkdir(parents=True, exist_ok=True)
     planned = _expand_sources(sources, destination)
@@ -437,64 +350,42 @@ def create_resumable_backup(
     state_path = operation_state_path(batch).resolve()
     if state_path.exists():
         raise BackupError(f"操作状态已存在，请使用继续功能: {state_path}")
-
-    staging, final_dir, archive = _operation_paths(destination, batch)
-    if staging.exists() or final_dir.exists() or archive.exists():
+    staging, final_dir = _operation_paths(destination, batch)
+    if staging.exists() or final_dir.exists():
         raise BackupError(f"备份批次已存在: {batch}")
     staging.mkdir(parents=True, exist_ok=False)
-
-    state = _new_state(
-        planned,
-        destination,
-        batch_id=batch,
-        zip_mode=zip_mode,
-        operation=operation,
-    )
+    state = _new_state(planned, destination, batch_id=batch, operation=operation)
     save_operation_state(state_path, state)
     _capacity_check(destination, state)
     return _run_operation(state_path, state, progress=progress)
 
 
-def _run_operation(
-    state_path: Path,
-    state: dict,
-    *,
-    progress: ProgressCallback | None = None,
-) -> tuple[Path, Path, dict]:
+def _run_operation(state_path: Path, state: dict, *, progress: ProgressCallback | None = None) -> tuple[Path, Path, dict]:
     destination = Path(str(state["destination_root"])).expanduser().resolve()
-    staging, final_dir, archive = _operation_paths(destination, state["batch_id"])
-    final = archive if state.get("zip_mode") else final_dir
-
-    if final.exists():
-        verify_backup(_io_path(final), progress=progress)
-        state["backup_path"] = str(final)
+    staging, final_dir = _operation_paths(destination, state["batch_id"])
+    if final_dir.exists():
+        verify_backup(_io_path(final_dir), progress=progress)
+        state["backup_path"] = str(final_dir)
         state["status"] = "backup_verified" if state.get("operation") == "migrate" else "completed"
         state["last_error"] = None
         save_operation_state(state_path, state)
-        return final, state_path, state
-
+        return final_dir, state_path, state
     if not staging.is_dir():
-        raise BackupError(
-            f"未完成批次的暂存目录不存在，无法续传: {staging}；状态文件: {state_path}"
-        )
-
+        raise BackupError(f"未完成批次的暂存目录不存在，无法续传: {staging}；状态文件: {state_path}")
     if state.get("status") not in ("copying",):
         for row in state["items"]:
             if row.get("state") == "copied" and not _copied_payload_still_valid(staging, row):
                 row["state"] = "pending"
                 row["error"] = "未完成暂存副本缺失或校验失败，准备重新复制"
-
     total = len(state["items"])
     state["status"] = "copying"
     state["last_error"] = None
     save_operation_state(state_path, state)
-
     try:
         for index, row in enumerate(state["items"], start=1):
             if row.get("state") == "copied":
                 _notify(progress, "copy", index, total, row["source_path"])
                 continue
-
             row["state"] = "pending"
             row["error"] = None
             _notify(progress, "copy_begin", index, total, row["source_path"])
@@ -506,21 +397,17 @@ def _run_operation(
                 _notify(progress, "copy_error", index, total, f"{row['source_path']} -> {exc}")
             else:
                 _notify(progress, "copy", index, total, row["source_path"])
-
             if row.get("state") == "failed" or index % _CHECKPOINT_EVERY == 0 or index == total:
                 save_operation_state(state_path, state)
-
         _recount(state)
         if state["failed"]:
             state["status"] = "copy_failed"
             state["last_error"] = _first_failure_summary(state)
             save_operation_state(state_path, state)
             raise BackupError(
-                f"批量复制未完整完成：成功 {state['copied']}/{state['total']}，"
-                f"失败 {state['failed']}。{state['last_error']}。"
-                f"已保留未完成副本；状态文件: {state_path}"
+                f"批量复制未完整完成：成功 {state['copied']}/{state['total']}，失败 {state['failed']}。"
+                f"{state['last_error']}。已保留未完成副本；状态文件: {state_path}"
             )
-
         result = _finish_verified_backup(state_path, state, staging, progress=progress)
         return result, state_path, state
     except KeyboardInterrupt:
@@ -541,11 +428,7 @@ def _run_operation(
         raise
 
 
-def resume_resumable_backup(
-    state_path: str | Path,
-    *,
-    progress: ProgressCallback | None = None,
-) -> tuple[Path, Path, dict]:
+def resume_resumable_backup(state_path: str | Path, *, progress: ProgressCallback | None = None) -> tuple[Path, Path, dict]:
     path = Path(state_path).expanduser().resolve()
     state = load_operation_state(path)
     return _run_operation(path, state, progress=progress)
