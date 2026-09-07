@@ -15,7 +15,7 @@ dependencies = ["colorama>=0.4.6,<1"]
 dev = ["pytest>=8,<9"]
 
 [project.scripts]
-filecheck = "filecheck.cli:main"
+filecheck = "filecheck.menu:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
