@@ -8,26 +8,23 @@ import pytest
 import filecheck.everything as everything
 
 
-def test_search_keyword_builds_query_and_filters_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_search_keyword_builds_query_filters_path_and_exclusions(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     inside = tmp_path / "scope" / "机密 测试.txt"
+    excluded = tmp_path / "scope" / "backup" / "机密 副本.txt"
     outside = tmp_path / "outside" / "机密 其他.txt"
     inside.parent.mkdir()
+    excluded.parent.mkdir()
     outside.parent.mkdir()
     inside.write_text("a", encoding="utf-8")
+    excluded.write_text("copy", encoding="utf-8")
     outside.write_text("b", encoding="utf-8")
 
     captured: dict[str, object] = {}
 
-    def fake_run_export_txt(
-        es_path: Path,
-        args: list[str],
-        timeout: int = 60,
-        *,
-        argv_mode: bool = True,
-    ) -> str:
+    def fake_run_export_txt(es_path: Path, args: list[str], timeout: int = 60, *, argv_mode: bool = True) -> str:
         captured["args"] = args
         captured["argv_mode"] = argv_mode
-        return f"{inside}\n{outside}\n"
+        return f"{inside}\n{excluded}\n{outside}\n"
 
     monkeypatch.setattr(everything, "_run_export_txt", fake_run_export_txt)
     result = everything.search_keyword(
@@ -36,12 +33,15 @@ def test_search_keyword_builds_query_and_filters_path(tmp_path: Path, monkeypatc
         ["txt", ".docx"],
         match_path=True,
         path_prefix=str(inside.parent),
+        instance="FileCheck",
+        exclude_roots=[excluded.parent],
     )
 
     assert result == [inside]
     args = captured["args"]
     assert isinstance(args, list)
     assert captured["argv_mode"] is True
+    assert args[:2] == ["-instance", "FileCheck"]
     assert "-p" in args
     assert "-path" in args
     assert "/a-d" in args
@@ -65,9 +65,7 @@ def test_run_argv_mode_places_switch_first(monkeypatch: pytest.MonkeyPatch) -> N
     assert command[2:] == ["-path", r"C:\Test", "机密 ext:txt"]
 
 
-def test_utf8_export_preserves_nonbreaking_space_and_unicode(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_utf8_export_preserves_nonbreaking_space_and_unicode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     expected = tmp_path / "HSMD1算法芯片数据手册\u00a0V2.4-兴唐通信科技有限公司.pdf"
     captured: dict[str, object] = {}
 
@@ -79,12 +77,7 @@ def test_utf8_export_preserves_nonbreaking_space_and_unicode(
         return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
 
     monkeypatch.setattr(everything.subprocess, "run", fake_subprocess_run)
-    output = everything._run_export_txt(
-        Path("es.exe"),
-        ["-full-path-and-name", '"算法" ext:pdf'],
-        argv_mode=True,
-    )
-
+    output = everything._run_export_txt(Path("es.exe"), ["-full-path-and-name", '"算法" ext:pdf'], argv_mode=True)
     assert output == str(expected)
     command = captured["command"]
     assert command[0] == "es.exe"
@@ -95,34 +88,27 @@ def test_utf8_export_preserves_nonbreaking_space_and_unicode(
     assert "\u00a0" in output
 
 
-def test_search_keyword_returns_exact_unicode_export_path(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_search_keyword_returns_exact_unicode_export_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     expected = tmp_path / "HSMD1算法芯片数据手册\u00a0V2.4-兴唐通信科技有限公司.pdf"
     monkeypatch.setattr(everything, "_run_export_txt", lambda *args, **kwargs: str(expected))
-
     result = everything.search_keyword(Path("es.exe"), "算法", ["pdf"])
-
     assert result == [expected]
     assert result[0].name == "HSMD1算法芯片数据手册\u00a0V2.4-兴唐通信科技有限公司.pdf"
 
 
-def test_scan_keywords_deduplicates_and_uses_highest_severity(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_scan_keywords_deduplicates_and_uses_highest_severity(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     file = tmp_path / "机密密码.txt"
     file.write_text("x", encoding="utf-8")
-
     monkeypatch.setattr(
         everything,
         "get_status",
-        lambda es=None: everything.EverythingStatus("es.exe", "1.1.0.37", "1.4.1.1032"),
+        lambda es=None, instance=None: everything.EverythingStatus("es.exe", "1.1.0.37", "1.4.1.1032", instance),
     )
     monkeypatch.setattr(everything, "search_keyword", lambda *args, **kwargs: [file])
-
     items = everything.scan_keywords(
         {"high": ["机密"], "sensitive": ["密码"]},
         ["txt"],
+        instance="FileCheck",
     )
     assert len(items) == 1
     assert set(items[0]["matched_keywords"]) == {"机密", "密码"}
@@ -165,9 +151,7 @@ def test_keyword_with_quote_is_rejected() -> None:
         everything._safe_keyword('bad"query')
 
 
-def test_indexed_but_inaccessible_result_is_retained(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_indexed_but_inaccessible_result_is_retained(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     missing = tmp_path / "indexed-but-currently-unavailable.txt"
     monkeypatch.setattr(everything, "_run_export_txt", lambda *args, **kwargs: str(missing))
     result = everything.search_keyword(Path("es.exe"), "unavailable", ["txt"])
