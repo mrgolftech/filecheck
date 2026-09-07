@@ -12,6 +12,17 @@ from .selftest import run_selftest
 from .util import now_iso, write_json
 
 
+def _configure_console_streams() -> None:
+    """Keep localized output from crashing on non-Chinese Windows code pages."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            try:
+                reconfigure(errors="replace")
+            except (OSError, ValueError):
+                pass
+
+
 def _load_rules(path: str | Path) -> dict:
     rules_path = Path(path)
     try:
@@ -201,6 +212,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    _configure_console_streams()
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
