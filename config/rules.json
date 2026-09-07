@@ -1,0 +1,12 @@
+{
+  "keywords": {
+    "high": ["绝密", "机密", "秘密"],
+    "sensitive": ["密钥", "密码"],
+    "review": ["算法", "方案", "报告", "大纲"]
+  },
+  "extensions": [
+    "doc", "docx", "xls", "xlsx", "ppt", "pptx",
+    "pdf", "txt", "wps", "zip", "rar", "7z", "dwg"
+  ],
+  "max_results_per_keyword": 100000
+}
