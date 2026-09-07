@@ -1,0 +1,128 @@
+name: Finalize v0.1.0 docs and cleanup branches
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/cleanup-merged-branches-once.yml
+
+permissions:
+  contents: write
+
+jobs:
+  finalize:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Update README and test-plan acceptance status
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          readme = Path('README.md')
+          text = readme.read_text(encoding='utf-8')
+
+          old = '''## V0.1.0 Win64 发布版
+
+          V0.1.0 提供可直接运行的 Win64 便携包，无需目标电脑安装 Python。发布包结构：
+
+          ```text
+          FileCheck-win64\\
+          ├─ FileCheck.exe
+          ├─ config\\
+          │  └─ rules.json
+          ├─ tools\\
+          │  └─ es.exe
+          ├─ README-WIN64.txt
+          ├─ THIRD-PARTY-NOTICES.txt
+          └─ SHA256SUMS.txt
+          ```
+
+          V0.1.0 已内置官方 **Everything Command-line Interface (ES) 1.1.0.37 x64**，位于 `tools\\es.exe`。Everything 本体仍需要在 Windows 上安装、启动并完成索引。
+
+          ES 为 voidtools 项目，按 MIT License 再分发；许可文本随发布包提供于 `THIRD-PARTY-NOTICES.txt`。
+          '''
+
+          new = '''## V0.1.0 Windows x64 发布版
+
+          V0.1.0 提供两个可直接运行的 Windows x64 便携包，无需目标电脑安装 Python：
+
+          - `FileCheck-v0.1.0-win10plus-x64.zip`：Windows 10 / Windows 11 x64。
+          - `FileCheck-v0.1.0-win7-x64.zip`：Windows 7 SP1 x64 兼容版。
+
+          两个发布包都包含 `FileCheck.exe`、`config\\rules.json`、`tools\\es.exe`、第三方许可说明和 SHA-256 清单。Everything 本体仍需要在 Windows 上安装、启动并完成索引。
+
+          Windows 7 兼容包使用 Python 3.8.10 + PyInstaller 5.13.2 构建，并于 2026-09-07 在真实 Windows 7 64 位电脑上完成启动与实际使用验收，用户反馈运行正常。
+
+          ES 为 voidtools 项目，按 MIT License 再分发；许可文本随发布包提供于 `THIRD-PARTY-NOTICES.txt`。
+          '''
+
+          # The triple-quoted block above is indented by the workflow YAML;
+          # normalize it before matching the Markdown file.
+          import textwrap
+          old = textwrap.dedent(old)
+          new = textwrap.dedent(new)
+          if old not in text:
+              raise SystemExit('README release block not found; refusing unsafe blind edit')
+          text = text.replace(old, new, 1)
+          text = text.replace('V0.1.0 Win64 发布包已经包含：', 'V0.1.0 两个 Windows x64 发布包均已经包含：', 1)
+          text = text.replace('1. Win64 冻结程序所在目录的 `tools\\es.exe`；', '1. Windows x64 冻结程序所在目录的 `tools\\es.exe`；', 1)
+          text = text.replace('- Win64 EXE smoke/selftest。', '- Windows 10/11 x64 与 Win7 x64 EXE smoke/selftest；\n- Win7 x64 Python 3.8 兼容构建与真实 Windows 7 启动/实际使用验收。', 1)
+          readme.write_text(text, encoding='utf-8')
+
+          plan = Path('docs/TEST_PLAN.md')
+          p = plan.read_text(encoding='utf-8')
+          matrix = '''- Windows latest + Python 3.10
+          - Windows latest + Python 3.12
+          - Ubuntu latest + Python 3.10
+          - Ubuntu latest + Python 3.12
+          '''
+          matrix = textwrap.dedent(matrix)
+          matrix_new = matrix + '\n另外维护 Win7 x64 兼容构建门禁：Python 3.8.10 + PyInstaller 5.13.2，执行源码编译、pytest 回归、EXE 构建、自检和发布包内容检查。\n'
+          if matrix not in p:
+              raise SystemExit('TEST_PLAN CI matrix block not found; refusing unsafe blind edit')
+          p = p.replace(matrix, matrix_new, 1)
+
+          marker = '- ZIP backup/verify/restore 同样 4/4 SHA-256 一致。\n'
+          addition = marker + '- 2026-09-07：`FileCheck-v0.1.0-win7-x64.zip` 已在真实 Windows 7 64 位电脑上完成启动与实际使用验收，用户反馈运行正常。\n'
+          if marker not in p:
+              raise SystemExit('TEST_PLAN Windows evidence marker not found; refusing unsafe blind edit')
+          p = p.replace(marker, addition, 1)
+          plan.write_text(p, encoding='utf-8')
+          PY
+
+      - name: Commit documentation updates
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add README.md docs/TEST_PLAN.md
+          git diff --cached --check
+          git commit -m "docs: record Win7 real-machine acceptance"
+          git push origin HEAD:main
+
+      - name: Refresh v0.1.0 Release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit v0.1.0 --notes-file packaging/RELEASE_NOTES_V0.1.0.md
+
+      - name: Delete merged and temporary branches
+        shell: bash
+        run: |
+          for branch in \
+            feat/v0.1-everything-backup \
+            release/win7-x64-work \
+            release/win7-x64 \
+            release/win7-x64-v2 \
+            release/win7-x64-final \
+            tmp-do-not-use
+          do
+            echo "Deleting $branch"
+            git push origin --delete "$branch"
+          done
