@@ -56,23 +56,20 @@ def test_failed_copy_is_never_published_as_valid_batch(
     assert not list(destination.glob(".FC-*.incomplete"))
 
 
-def test_zip_failure_does_not_leave_final_archive(
+def test_verify_failure_never_publishes_incomplete_batch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     source = tmp_path / "source.txt"
     source.write_text("content", encoding="utf-8")
     destination = tmp_path / "backup"
 
-    def fail_zip(staging: Path, archive: Path, *, progress=None) -> None:
-        archive.write_bytes(b"partial zip")
-        raise OSError("simulated destination failure")
+    def fail_verify(_path: Path, *, progress=None):
+        raise BackupError("simulated final verify failure")
 
-    monkeypatch.setattr(backup_mod, "_create_zip_from_staging", fail_zip)
+    monkeypatch.setattr(backup_mod, "verify_backup", fail_verify)
+    with pytest.raises(BackupError, match="final verify failure"):
+        create_backup([source], destination)
 
-    with pytest.raises(OSError, match="destination failure"):
-        create_backup([source], destination, zip_mode=True)
-
-    assert not list(destination.glob("FC-*.zip"))
     assert not list(destination.glob("FC-*"))
     assert not list(destination.glob(".FC-*.incomplete"))
 
@@ -105,7 +102,6 @@ def test_readonly_file_backup_and_restore_roundtrip(tmp_path: Path) -> None:
     backup = create_backup([source], tmp_path / "backup")
     verify_backup(backup)
 
-    # Make the disposable source removable for the roundtrip test itself.
     source.chmod(stat.S_IREAD | stat.S_IWRITE)
     source.unlink()
     restored = restore_backup(backup)
