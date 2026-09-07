@@ -63,7 +63,7 @@ def test_zip_failure_does_not_leave_final_archive(
     source.write_text("content", encoding="utf-8")
     destination = tmp_path / "backup"
 
-    def fail_zip(staging: Path, archive: Path) -> None:
+    def fail_zip(staging: Path, archive: Path, *, progress=None) -> None:
         archive.write_bytes(b"partial zip")
         raise OSError("simulated destination failure")
 
