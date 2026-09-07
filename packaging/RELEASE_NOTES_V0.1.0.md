@@ -1,6 +1,13 @@
 # FileCheck v0.1.0
 
-首个正式 Win64 发布版。
+FileCheck v0.1.0 提供两个 Windows x64 发布包，请按系统版本选择：
+
+- **`FileCheck-v0.1.0-win10plus-x64.zip`**：Windows 10 / Windows 11 x64，使用 Python 3.12 + PyInstaller 6 构建，推荐用于较新 Windows。
+- **`FileCheck-v0.1.0-win7-x64.zip`**：Windows 7 SP1 x64 兼容版，使用 Python 3.8.10 + PyInstaller 5.13.2 构建。
+
+两个发布包都包含 `tools\es.exe`（Everything Command-line Interface 1.1.0.37 x64）。Everything 1.4.x 本体仍需要安装、启动并完成索引。
+
+> Windows 7 兼容包已经通过 Python 3.8 源码编译、自动化回归、PyInstaller 构建和 EXE 自检，但 GitHub Actions 运行环境本身不是 Windows 7，因此仍需在真实 Windows 7 SP1 x64 机器上做最终实机验收。
 
 ## 主要能力
 
@@ -12,13 +19,16 @@
 - 支持在已验证备份基础上再次核对源文件后批量删除源文件。
 - 支持依据 manifest 恢复到原始路径。
 - 批量复制支持操作状态和中断续传。
-- Win64 发布包内置 ES CLI 1.1.0.37 x64，位于 `tools\es.exe`。
 
 ## 环境要求
 
-- Windows x64。
-- Everything 1.4.x 已安装、正在运行并完成索引。
-- FileCheck 发布包内已包含 ES CLI 1.1.0.37 x64。
+### Windows 10 / 11 x64
+
+使用 `FileCheck-v0.1.0-win10plus-x64.zip`。
+
+### Windows 7 SP1 x64
+
+使用 `FileCheck-v0.1.0-win7-x64.zip`。建议 Windows 7 已安装全部可用系统更新；若系统缺少 Universal C Runtime / VC 运行库相关更新，可能仍需先补齐系统运行库更新。
 
 ## 推荐流程
 
@@ -33,4 +43,4 @@
 
 ## 第三方组件
 
-本发布包包含 voidtools 的 Everything Command-line Interface (ES) 1.1.0.37 x64，按 MIT License 再分发。许可文本随包提供于 `THIRD-PARTY-NOTICES.txt`。
+发布包包含 voidtools 的 Everything Command-line Interface (ES) 1.1.0.37 x64，按 MIT License 再分发。许可文本随包提供于 `THIRD-PARTY-NOTICES.txt`。

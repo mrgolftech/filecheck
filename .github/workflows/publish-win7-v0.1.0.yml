@@ -1,0 +1,143 @@
+name: Publish Win7 v0.1.0
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - "packaging/README-WIN7-X64.txt"
+      - "packaging/RELEASE_NOTES_V0.1.0.md"
+      - ".github/workflows/publish-win7-v0.1.0.yml"
+      - ".github/workflows/build-win7-x64.yml"
+
+jobs:
+  publish:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+
+    env:
+      RELEASE_TAG: v0.1.0
+      WIN7_ASSET: FileCheck-v0.1.0-win7-x64.zip
+      WIN10PLUS_ASSET: FileCheck-v0.1.0-win10plus-x64.zip
+      OLD_ASSET: FileCheck-v0.1.0-win64.zip
+      PYTHONPATH: src
+      ES_URL: https://github.com/voidtools/ES/releases/download/1.1.0.37/ES-1.1.0.37.x64.zip
+      ES_ZIP_SHA256: 7A57670D9152068D05876C58858C82FE6D3915A9DF2C819F4DE8801E2929D3A7
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.8.10 x64
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.8.10"
+          architecture: "x64"
+
+      - name: Install Win7-compatible dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade "pip<25" "setuptools<76" "wheel<0.46"
+          python -m pip install "colorama==0.4.6" "pytest==7.4.4" "pyinstaller==5.13.2"
+
+      - name: Validate Python 3.8 compatibility
+        shell: pwsh
+        run: |
+          python -m compileall -q src packaging/filecheck_entry.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m pytest -q
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python packaging/filecheck_entry.py selftest
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Build Win7-compatible FileCheck.exe
+        shell: pwsh
+        run: |
+          pyinstaller `
+            --noconfirm `
+            --clean `
+            --onefile `
+            --console `
+            --name FileCheck `
+            --paths src `
+            --add-data "config/rules.json;config" `
+            packaging/filecheck_entry.py
+          .\dist\FileCheck.exe selftest
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Download and verify official ES 1.1.0.37 x64
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "$env:ES_URL" -OutFile "ES-1.1.0.37.x64.zip"
+          $actual = (Get-FileHash "ES-1.1.0.37.x64.zip" -Algorithm SHA256).Hash
+          if ($actual -ne $env:ES_ZIP_SHA256) {
+            throw "ES archive SHA-256 mismatch. expected=$env:ES_ZIP_SHA256 actual=$actual"
+          }
+          Expand-Archive "ES-1.1.0.37.x64.zip" -DestinationPath "es-dist" -Force
+          $es = Get-ChildItem "es-dist" -Recurse -File -Filter "es.exe" | Select-Object -First 1
+          if (-not $es) { throw "es.exe not found in official ES archive" }
+          & $es.FullName -version | Out-Host
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Assemble Win7 x64 package
+        shell: pwsh
+        run: |
+          $pkg = "package\FileCheck-win7-x64"
+          New-Item -ItemType Directory -Force "$pkg\config" | Out-Null
+          New-Item -ItemType Directory -Force "$pkg\tools" | Out-Null
+          Copy-Item "dist\FileCheck.exe" "$pkg\FileCheck.exe"
+          Copy-Item "config\rules.json" "$pkg\config\rules.json"
+          Copy-Item "packaging\README-WIN7-X64.txt" "$pkg\README-WIN7-X64.txt"
+          Copy-Item "packaging\THIRD-PARTY-NOTICES.txt" "$pkg\THIRD-PARTY-NOTICES.txt"
+          $es = Get-ChildItem "es-dist" -Recurse -File -Filter "es.exe" | Select-Object -First 1
+          Copy-Item $es.FullName "$pkg\tools\es.exe"
+          $filecheckHash = (Get-FileHash "$pkg\FileCheck.exe" -Algorithm SHA256).Hash
+          $esHash = (Get-FileHash "$pkg\tools\es.exe" -Algorithm SHA256).Hash
+          @(
+            "FileCheck.exe  $filecheckHash",
+            "tools\es.exe  $esHash"
+          ) | Set-Content -Encoding ASCII "$pkg\SHA256SUMS.txt"
+          Compress-Archive -Path "$pkg\*" -DestinationPath "$env:WIN7_ASSET" -Force
+          Write-Host "Win7 asset SHA-256: $((Get-FileHash $env:WIN7_ASSET -Algorithm SHA256).Hash)"
+          Get-Content "$pkg\SHA256SUMS.txt"
+
+      - name: Download existing Win10+ package for clear rename
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          New-Item -ItemType Directory -Force "existing-release" | Out-Null
+          gh release download "$env:RELEASE_TAG" --repo "$env:GITHUB_REPOSITORY" --pattern "$env:OLD_ASSET" --dir "existing-release"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Copy-Item "existing-release\$env:OLD_ASSET" "$env:WIN10PLUS_ASSET"
+          $verifyDir = Join-Path $env:RUNNER_TEMP "filecheck-win10plus-check"
+          Expand-Archive "$env:WIN10PLUS_ASSET" -DestinationPath $verifyDir -Force
+          if (-not (Test-Path (Join-Path $verifyDir "FileCheck.exe"))) { throw "Win10+ package FileCheck.exe missing" }
+          if (-not (Test-Path (Join-Path $verifyDir "tools\es.exe"))) { throw "Win10+ package tools\es.exe missing" }
+          Write-Host "Win10+ asset SHA-256: $((Get-FileHash $env:WIN10PLUS_ASSET -Algorithm SHA256).Hash)"
+
+      - name: Upload both clearly named assets
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "$env:RELEASE_TAG" "$env:WIN7_ASSET#Windows 7 SP1 x64" "$env:WIN10PLUS_ASSET#Windows 10/11 x64" --repo "$env:GITHUB_REPOSITORY" --clobber
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Remove old ambiguous win64 asset
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete-asset "$env:RELEASE_TAG" "$env:OLD_ASSET" --repo "$env:GITHUB_REPOSITORY" --yes
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Refresh v0.1.0 release notes
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release edit "$env:RELEASE_TAG" --repo "$env:GITHUB_REPOSITORY" --notes-file "packaging\RELEASE_NOTES_V0.1.0.md"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
