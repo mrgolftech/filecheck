@@ -248,7 +248,9 @@ CI 矩阵：
 - Ubuntu latest + Python 3.10
 - Ubuntu latest + Python 3.12
 
-每个平台同时执行单元/故障注入/压力测试和 `filecheck selftest`。真实 Everything IPC 仍需在安装 Everything 的 Windows 目标机验收。
+当前基线：**48 项自动化测试在四个矩阵环境全部通过，且四个平台 `filecheck selftest` 全部通过。** 自动化覆盖批量扫描结果消费、目录/ZIP 备份恢复、显式迁移、250 文件批量迁移压力、文件变化、损坏备份、占用/权限模拟、断点续跑、已删除路径重新出现保护和 Windows 只读文件刷盘。
+
+真实 Everything IPC 仍需在安装 Everything 的 Windows 目标机验收；当前 Everything 1.4.1.877 / ES 1.1.0.37 的实机扫描，以及目录/ZIP 备份恢复均已完成受控测试。显式 `migrate` 的源文件移除流程仍应先在专用可丢弃 Windows 测试目录做最终验收。
 
 ## 安全边界与已知限制
 
