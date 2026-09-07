@@ -6,7 +6,7 @@ import tempfile
 from pathlib import Path
 
 from .backup import create_backup, restore_backup, verify_backup
-from .migration import preflight_migration, remove_verified_sources
+from .migration import remove_verified_sources
 
 
 def _sha256(path: Path) -> str:
@@ -52,81 +52,71 @@ def _assert_restored(expected: dict[str, str]) -> None:
             raise RuntimeError(f"自检恢复 SHA-256 不一致: {path}")
 
 
-def _exercise(zip_mode: bool) -> int:
+def _exercise_roundtrip() -> int:
     with tempfile.TemporaryDirectory(prefix="filecheck-selftest-") as tmp:
         base = Path(tmp)
         source = base / "源数据"
         backup_root = base / "备份"
         source.mkdir()
         expected = _make_fixture(source)
-
-        backup = create_backup([source], backup_root, zip_mode=zip_mode)
+        backup = create_backup([source], backup_root)
         manifest = verify_backup(backup)
         if len(manifest["items"]) != len(expected):
             raise RuntimeError("自检 manifest 文件数量不一致")
+        if "source_removed" in manifest or any("source_removed" in row for row in manifest["items"]):
+            raise RuntimeError("v0.1.1 manifest 不应包含 source_removed")
 
-        # This deletes only disposable files created under this TemporaryDirectory.
         shutil.rmtree(source)
         results = restore_backup(backup, conflict="skip")
         if sum(row["state"] == "restored" for row in results) != len(expected):
             raise RuntimeError("自检恢复文件数量不一致")
         _assert_restored(expected)
 
-        # Verify conflict=skip does not alter an existing file.
         target = Path(next(iter(expected)))
         target.write_bytes(b"LOCAL-CHANGE")
         restore_backup(backup, conflict="skip")
         if target.read_bytes() != b"LOCAL-CHANGE":
-            raise RuntimeError("conflict=skip 自检失败：现有文件被修改")
-
-        # Verify conflict=overwrite restores verified content.
+            raise RuntimeError("conflict=skip 自检失败")
         restore_backup(backup, conflict="overwrite")
         _assert_restored(expected)
         return len(expected)
 
 
-def _exercise_migration(zip_mode: bool) -> int:
-    with tempfile.TemporaryDirectory(prefix="filecheck-migrate-selftest-") as tmp:
+def _exercise_removal_restore() -> int:
+    with tempfile.TemporaryDirectory(prefix="filecheck-remove-selftest-") as tmp:
         base = Path(tmp)
-        source = base / "待迁移"
+        source = base / "待删除"
         backup_root = base / "备份"
         source.mkdir()
         expected = _make_fixture(source)
+        backup = create_backup([source], backup_root)
 
-        backup = create_backup([source], backup_root, zip_mode=zip_mode)
-        preflight = preflight_migration(backup)
-        if preflight["files"] != len(expected):
-            raise RuntimeError("迁移自检源文件复核数量不一致")
-
-        state_path, state = remove_verified_sources(backup, preflight=False, checkpoint_every=2)
+        state_path, state = remove_verified_sources(backup)
         if state["status"] != "completed" or state["deleted"] != len(expected):
-            raise RuntimeError(f"迁移自检源文件移除失败: {state_path}")
+            raise RuntimeError(f"源文件删除自检失败: {state_path}")
+        if state_path != backup / "source-removal.json":
+            raise RuntimeError("source-removal.json 未保存在备份目录")
         for raw in expected:
             if Path(raw).exists():
-                raise RuntimeError(f"迁移自检源文件仍存在: {raw}")
+                raise RuntimeError(f"源文件仍存在: {raw}")
 
-        # The backup must remain fully valid after source removal.
         verify_backup(backup)
         restored = restore_backup(backup, conflict="skip")
         if sum(row["state"] == "restored" for row in restored) != len(expected):
-            raise RuntimeError("迁移自检恢复数量不一致")
+            raise RuntimeError("删除后恢复数量不一致")
         _assert_restored(expected)
         return len(expected)
 
 
 def run_selftest() -> dict[str, str]:
-    directory_count = _exercise(zip_mode=False)
-    zip_count = _exercise(zip_mode=True)
-    migrate_directory_count = _exercise_migration(zip_mode=False)
-    migrate_zip_count = _exercise_migration(zip_mode=True)
+    directory_count = _exercise_roundtrip()
+    removal_count = _exercise_removal_restore()
     return {
         "directory_roundtrip": f"PASS ({directory_count} files)",
-        "zip_roundtrip": f"PASS ({zip_count} files)",
-        "migration_directory_roundtrip": f"PASS ({migrate_directory_count} files)",
-        "migration_zip_roundtrip": f"PASS ({migrate_zip_count} files)",
+        "manifest_immutable": "PASS",
+        "source_removal_state": f"PASS ({removal_count} files)",
         "sha256_verification": "PASS",
         "conflict_skip": "PASS",
         "conflict_overwrite": "PASS",
-        "migration_source_recheck": "PASS",
-        "migration_restore": "PASS",
+        "source_removal_restore": "PASS",
     }
