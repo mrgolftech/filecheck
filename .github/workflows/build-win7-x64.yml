@@ -1,0 +1,143 @@
+name: Build Win7 x64
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - release/win7-x64-work
+    paths:
+      - "src/**"
+      - "config/**"
+      - "packaging/**"
+      - "tests/**"
+      - ".github/workflows/build-win7-x64.yml"
+
+jobs:
+  build-win7-x64:
+    runs-on: windows-latest
+
+    env:
+      PYTHONPATH: src
+      ES_URL: https://github.com/voidtools/ES/releases/download/1.1.0.37/ES-1.1.0.37.x64.zip
+      ES_ZIP_SHA256: 7A57670D9152068D05876C58858C82FE6D3915A9DF2C819F4DE8801E2929D3A7
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.8.10 x64
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.8.10"
+          architecture: "x64"
+
+      - name: Verify Python runtime
+        shell: pwsh
+        run: |
+          python -c "import platform,sys; print(sys.version); print(platform.architecture()); assert sys.version_info[:2] == (3, 8); assert platform.architecture()[0] == '64bit'"
+
+      - name: Install Win7-compatible test/build dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade "pip<25" "setuptools<76" "wheel<0.46"
+          python -m pip install "colorama==0.4.6" "pytest==7.4.4" "pyinstaller==5.13.2"
+
+      - name: Compile all source with Python 3.8
+        shell: pwsh
+        run: |
+          python -m compileall -q src packaging/filecheck_entry.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Run Python 3.8 regression tests
+        shell: pwsh
+        run: |
+          python -m pytest -q
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python packaging/filecheck_entry.py selftest
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Build Win7-compatible FileCheck.exe
+        shell: pwsh
+        run: |
+          pyinstaller `
+            --noconfirm `
+            --clean `
+            --onefile `
+            --console `
+            --name FileCheck `
+            --paths src `
+            --add-data "config/rules.json;config" `
+            packaging/filecheck_entry.py
+
+      - name: Smoke test executable on runner
+        shell: pwsh
+        run: |
+          .\dist\FileCheck.exe selftest
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          .\dist\FileCheck.exe --help | Out-Host
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Download and verify official ES 1.1.0.37 x64
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "$env:ES_URL" -OutFile "ES-1.1.0.37.x64.zip"
+          $actual = (Get-FileHash "ES-1.1.0.37.x64.zip" -Algorithm SHA256).Hash
+          if ($actual -ne $env:ES_ZIP_SHA256) {
+            throw "ES archive SHA-256 mismatch. expected=$env:ES_ZIP_SHA256 actual=$actual"
+          }
+          Expand-Archive "ES-1.1.0.37.x64.zip" -DestinationPath "es-dist" -Force
+          $es = Get-ChildItem "es-dist" -Recurse -File -Filter "es.exe" | Select-Object -First 1
+          if (-not $es) { throw "es.exe not found in official ES archive" }
+          & $es.FullName -version | Out-Host
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Assemble Win7 x64 portable package
+        shell: pwsh
+        run: |
+          $pkg = "package\FileCheck-win7-x64"
+          New-Item -ItemType Directory -Force "$pkg\config" | Out-Null
+          New-Item -ItemType Directory -Force "$pkg\tools" | Out-Null
+
+          Copy-Item "dist\FileCheck.exe" "$pkg\FileCheck.exe"
+          Copy-Item "config\rules.json" "$pkg\config\rules.json"
+          Copy-Item "packaging\README-WIN7-X64.txt" "$pkg\README-WIN7-X64.txt"
+          Copy-Item "packaging\THIRD-PARTY-NOTICES.txt" "$pkg\THIRD-PARTY-NOTICES.txt"
+
+          $es = Get-ChildItem "es-dist" -Recurse -File -Filter "es.exe" | Select-Object -First 1
+          Copy-Item $es.FullName "$pkg\tools\es.exe"
+
+          @"
+          Bundled component:
+            Everything Command-line Interface (ES) 1.1.0.37 x64
+            tools\es.exe
+
+          Everything 1.4.x itself must still be installed/running on Windows 7 SP1 x64.
+          "@ | Set-Content -Encoding UTF8 "$pkg\tools\README.txt"
+
+          $filecheckHash = (Get-FileHash "$pkg\FileCheck.exe" -Algorithm SHA256).Hash
+          $esHash = (Get-FileHash "$pkg\tools\es.exe" -Algorithm SHA256).Hash
+          @(
+            "FileCheck.exe  $filecheckHash",
+            "tools\es.exe  $esHash"
+          ) | Set-Content -Encoding ASCII "$pkg\SHA256SUMS.txt"
+
+          Compress-Archive -Path "$pkg\*" -DestinationPath "FileCheck-v0.1.0-win7-x64.zip" -Force
+          $assetHash = (Get-FileHash "FileCheck-v0.1.0-win7-x64.zip" -Algorithm SHA256).Hash
+          Write-Host "Win7 package SHA-256: $assetHash"
+          Get-Content "$pkg\SHA256SUMS.txt"
+
+      - name: Validate package contents
+        shell: pwsh
+        run: |
+          $verifyDir = Join-Path $env:RUNNER_TEMP "filecheck-win7-check"
+          Expand-Archive "FileCheck-v0.1.0-win7-x64.zip" -DestinationPath $verifyDir -Force
+          if (-not (Test-Path (Join-Path $verifyDir "FileCheck.exe"))) { throw "FileCheck.exe missing" }
+          if (-not (Test-Path (Join-Path $verifyDir "tools\es.exe"))) { throw "tools\es.exe missing" }
+          if (-not (Test-Path (Join-Path $verifyDir "config\rules.json"))) { throw "rules.json missing" }
+
+      - name: Upload Win7 x64 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: FileCheck-v0.1.0-win7-x64
+          path: FileCheck-v0.1.0-win7-x64.zip
+          if-no-files-found: error
