@@ -10,6 +10,9 @@ from pathlib import Path, PureWindowsPath
 from typing import Any
 
 
+_IO_CHUNK_SIZE = 8 * 1024 * 1024
+
+
 def now_iso() -> str:
     return datetime.now().astimezone().isoformat(timespec="seconds")
 
@@ -19,7 +22,7 @@ def make_batch_id() -> str:
     return f"FC-{stamp}-{uuid.uuid4().hex[:8]}"
 
 
-def sha256_file(path: Path, chunk_size: int = 1024 * 1024) -> str:
+def sha256_file(path: Path, chunk_size: int = _IO_CHUNK_SIZE) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as fh:
         while chunk := fh.read(chunk_size):
