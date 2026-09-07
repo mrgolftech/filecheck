@@ -6,23 +6,16 @@ FileCheck 是一个面向 Windows 终端的离线文件自查、批量备份、�
 >
 > `scan` 和 `backup` 永远不删除源文件。源文件删除只能通过明确的删除/迁移功能进入，并在删除前重新验证整个备份、重新核对源文件，最后还需要一次批次级确认。
 
-## V0.1.0 Win64 发布版
+## V0.1.0 Windows x64 发布版
 
-V0.1.0 提供可直接运行的 Win64 便携包，无需目标电脑安装 Python。发布包结构：
+V0.1.0 提供两个可直接运行的 Windows x64 便携包，无需目标电脑安装 Python：
 
-```text
-FileCheck-win64\
-├─ FileCheck.exe
-├─ config\
-│  └─ rules.json
-├─ tools\
-│  └─ es.exe
-├─ README-WIN64.txt
-├─ THIRD-PARTY-NOTICES.txt
-└─ SHA256SUMS.txt
-```
+- `FileCheck-v0.1.0-win10plus-x64.zip`：Windows 10 / Windows 11 x64。
+- `FileCheck-v0.1.0-win7-x64.zip`：Windows 7 SP1 x64 兼容版。
 
-V0.1.0 已内置官方 **Everything Command-line Interface (ES) 1.1.0.37 x64**，位于 `tools\es.exe`。Everything 本体仍需要在 Windows 上安装、启动并完成索引。
+两个发布包都包含 `FileCheck.exe`、`config\rules.json`、`tools\es.exe`、第三方许可说明和 SHA-256 清单。Everything 本体仍需要在 Windows 上安装、启动并完成索引。
+
+Windows 7 兼容包使用 Python 3.8.10 + PyInstaller 5.13.2 构建，并于 2026-09-07 在真实 Windows 7 64 位电脑上完成启动与实际使用验收，用户反馈运行正常。
 
 ES 为 voidtools 项目，按 MIT License 再分发；许可文本随发布包提供于 `THIRD-PARTY-NOTICES.txt`。
 
@@ -79,7 +72,7 @@ ES 为 voidtools 项目，按 MIT License 再分发；许可文本随发布包�
 
 ## 2. 确认 ES CLI
 
-V0.1.0 Win64 发布包已经包含：
+V0.1.0 两个 Windows x64 发布包均已经包含：
 
 ```text
 tools\es.exe
@@ -540,7 +533,7 @@ python -m pip install -e ".[dev]"
 
 ES CLI 搜索顺序包括：
 
-1. Win64 冻结程序所在目录的 `tools\es.exe`；
+1. Windows x64 冻结程序所在目录的 `tools\es.exe`；
 2. 当前工作目录 `tools\es.exe`；
 3. 系统 PATH；
 4. `FILECHECK_ES`；
@@ -582,7 +575,8 @@ CI 矩阵：
 - 删除中断续跑；
 - 已删除路径重新出现保护；
 - 恢复冲突策略；
-- Win64 EXE smoke/selftest。
+- Windows 10/11 x64 与 Win7 x64 EXE smoke/selftest；
+- Win7 x64 Python 3.8 兼容构建与真实 Windows 7 启动/实际使用验收。
 
 ---
 

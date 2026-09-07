@@ -45,6 +45,8 @@ GitHub Actions 矩阵：
 - Ubuntu latest + Python 3.10
 - Ubuntu latest + Python 3.12
 
+另外维护 Win7 x64 兼容构建门禁：Python 3.8.10 + PyInstaller 5.13.2，执行源码编译、pytest 回归、EXE 构建、自检和发布包内容检查。
+
 每个平台执行：
 
 ```text
@@ -139,6 +141,7 @@ Windows 和 Ubuntu 都运行同一套单元、故障注入、批量迁移压力�
 - 人工移走原测试目录后，directory restore：`restored=4, skipped=0`；
 - 4/4 恢复文件与原测试副本 SHA-256 一致；
 - ZIP backup/verify/restore 同样 4/4 SHA-256 一致。
+- 2026-09-07：`FileCheck-v0.1.0-win7-x64.zip` 已在真实 Windows 7 64 位电脑上完成启动与实际使用验收，用户反馈运行正常。
 
 真实 Windows **显式 migrate 源文件移除**仍建议使用专用测试目录再做一次最终验收，不能直接拿重要数据作为首次迁移测试。
 
