@@ -47,7 +47,7 @@ def test_failed_copy_is_never_published_as_valid_batch(
         create_backup([source], destination)
 
     assert seen_target
-    assert ".incomplete" in seen_target[0].parts[-4] or any(
+    assert any(
         part.startswith(".FC-") and part.endswith(".incomplete")
         for part in seen_target[0].parts
     )
