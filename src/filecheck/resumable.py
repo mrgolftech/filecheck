@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import os
 import shutil
 from pathlib import Path
@@ -13,7 +12,7 @@ from .backup import (
     _create_zip_from_staging,
     verify_backup,
 )
-from .util import app_data_dir, make_batch_id, now_iso, read_json, safe_component, sha256_file, write_json
+from .util import app_data_dir, backup_relpath, make_batch_id, now_iso, read_json, sha256_file, write_json
 
 
 _OPERATION_SCHEMA_VERSION = 1
@@ -30,11 +29,10 @@ def _notify(progress: ProgressCallback | None, stage: str, current: int, total: 
 def _io_path(path: str | Path) -> Path:
     """Return a Windows extended-length path for actual file I/O.
 
-    The scan manifest must keep the ordinary absolute path because that is the
-    path users know and the path restore targets.  File I/O is a different
-    concern: a mirrored backup destination can easily become longer than the
-    original source path.  Using the Win32 extended-length prefix prevents a
-    portable FileCheck build from depending on the machine-wide MAX_PATH policy.
+    Backup payloads deliberately preserve the source directory tree for manual
+    inspection.  That mirrored destination can become longer than the original
+    source path, so actual Windows I/O uses the extended-length prefix while the
+    manifest and visible backup tree keep ordinary human-readable paths.
     """
 
     path = Path(path)
@@ -105,7 +103,6 @@ def _expand_sources(sources: Iterable[str | Path], destination_root: Path) -> li
             if _is_within_text(dest_text, source_text):
                 raise BackupError(f"备份目标不能位于待备份源目录内部: {source_text}")
             for root, dirs, files in os.walk(str(source_io), followlinks=False):
-                # Do not descend through directory symlinks/reparse points.
                 kept_dirs: list[str] = []
                 for name in dirs:
                     candidate = Path(root) / name
@@ -129,9 +126,6 @@ def _expand_sources(sources: Iterable[str | Path], destination_root: Path) -> li
                         result.append(os.path.abspath(candidate_text))
             continue
 
-        # Treat a non-directory entry as an intended file even when it is
-        # currently missing/inaccessible.  The copy phase records a precise
-        # per-file failure and leaves the operation resumable.
         key = os.path.normcase(source_text)
         if key not in seen:
             seen.add(key)
@@ -142,21 +136,15 @@ def _expand_sources(sources: Iterable[str | Path], destination_root: Path) -> li
     return result
 
 
-def _compact_backup_relpath(source_text: str) -> Path:
-    """Map a source path to a short collision-resistant storage path.
+def _mirrored_backup_relpath(source_text: str) -> Path:
+    """Keep the source drive/directory/file layout inside ``files/``.
 
-    Mirroring the complete absolute source tree below ``files/`` adds tens of
-    characters and can push an otherwise valid Windows source beyond MAX_PATH.
-    The manifest already carries the authoritative original path, so the payload
-    storage path can be compact without changing restore semantics.
+    Example: ``G:\\work\\a.pdf`` becomes ``files/G/work/a.pdf``.  The readable
+    layout is intentional: users can inspect a directory backup without needing
+    FileCheck or manifest lookup to understand where a file came from.
     """
 
-    identity = os.path.normcase(os.path.abspath(source_text))
-    digest = hashlib.sha256(identity.encode("utf-8", errors="surrogatepass")).hexdigest()
-    suffix = safe_component(Path(source_text).suffix)[:16]
-    if suffix and not suffix.startswith("."):
-        suffix = "." + suffix
-    return Path("files") / digest[:2] / f"{digest}{suffix}"
+    return backup_relpath(Path(source_text))
 
 
 def operation_state_path(batch_id: str) -> Path:
@@ -188,7 +176,7 @@ def _new_state(
     created = now_iso()
     items = []
     for source_text in sources:
-        rel = _compact_backup_relpath(source_text)
+        rel = _mirrored_backup_relpath(source_text)
         planned_size: int | None = None
         try:
             source_io = _io_path(source_text)
@@ -219,7 +207,7 @@ def _new_state(
         "status": "copying",
         "destination_root": str(destination_root),
         "zip_mode": bool(zip_mode),
-        "storage_layout": "compact-path-sha256-v1",
+        "storage_layout": "mirrored-source-tree-v1",
         "backup_path": None,
         "last_error": None,
         "total": len(items),
@@ -352,7 +340,7 @@ def _manifest_from_state(state: dict) -> dict:
         "mode": "zip" if state.get("zip_mode") else "directory",
         "source_removed": False,
         "copy_strategy": "resumable-single-pass-sha256-v1",
-        "storage_layout": state.get("storage_layout", "compact-path-sha256-v1"),
+        "storage_layout": state.get("storage_layout", "mirrored-source-tree-v1"),
         "source_bytes_total": total_bytes,
         "space_required_estimate": None,
         "space_free_at_start": None,
@@ -477,8 +465,6 @@ def _run_operation(
     staging, final_dir, archive = _operation_paths(destination, state["batch_id"])
     final = archive if state.get("zip_mode") else final_dir
 
-    # Crash window: publication may have succeeded immediately before the state
-    # checkpoint.  Trust it only after a fresh complete verification.
     if final.exists():
         verify_backup(_io_path(final), progress=progress)
         state["backup_path"] = str(final)
@@ -492,8 +478,6 @@ def _run_operation(
             f"未完成批次的暂存目录不存在，无法续传: {staging}；状态文件: {state_path}"
         )
 
-    # Revalidate copied checkpoints before skipping them on resume.  Any missing
-    # or corrupted partial payload is simply copied again from the source.
     if state.get("status") not in ("copying",):
         for row in state["items"]:
             if row.get("state") == "copied" and not _copied_payload_still_valid(staging, row):
