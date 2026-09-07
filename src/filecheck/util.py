@@ -34,11 +34,39 @@ def app_data_dir() -> Path:
     return Path.home() / ".filecheck"
 
 
+def _fsync_parent(path: Path) -> None:
+    """Best-effort directory sync on platforms that support it."""
+    if os.name == "nt":
+        return
+    try:
+        fd = os.open(str(path.parent), os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
 def write_json(path: Path, data: Any) -> None:
+    """Atomically write JSON and flush file data before publishing it."""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(path)
+    try:
+        with tmp.open("w", encoding="utf-8", newline="\n") as fh:
+            json.dump(data, fh, ensure_ascii=False, indent=2)
+            fh.write("\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+        _fsync_parent(path)
+    finally:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def read_json(path: Path) -> Any:
