@@ -4,12 +4,13 @@ import argparse
 import json
 import os
 import sys
+import time
 from collections import Counter, defaultdict
 from pathlib import Path
 
 from colorama import Fore, Style, just_fix_windows_console
 
-from .backup import BackupError, create_backup, restore_backup, verify_backup
+from .backup import BackupError, create_backup, read_backup_manifest, restore_backup, verify_backup
 from .everything import EverythingError, get_status, scan_keywords
 from .migration import MigrationError, preflight_migration, remove_verified_sources, resume_migration
 from .selftest import run_selftest
@@ -244,16 +245,36 @@ def _progress(stage: str, current: int, total: int, path: str) -> None:
     print(f"  {label}: {current}/{total}")
 
 
+def _processing_rate(total_bytes: int, elapsed: float) -> str | None:
+    if total_bytes <= 0 or elapsed <= 0:
+        return None
+    return f"{total_bytes / (1024 * 1024) / elapsed:.1f} MiB/s"
+
+
 def cmd_backup(args: argparse.Namespace) -> int:
     sources = _resolve_sources(args)
     if args.from_scan and not args.select:
         print(f"准备批量备份扫描结果中的全部候选: {len(sources)} 个文件")
+
+    started = time.perf_counter()
     result = create_backup(sources, args.dest, zip_mode=args.zip, progress=_progress)
-    manifest = verify_backup(result, progress=_progress)
+    elapsed = time.perf_counter() - started
+
+    # create_backup only publishes after a full SHA-256 verification. Re-reading
+    # every payload here merely to print metadata used to add another complete
+    # disk pass, so read the already-validated manifest without hashing again.
+    manifest = read_backup_manifest(result)
+    total_bytes = int(
+        manifest.get("source_bytes_total", sum(int(i["size"]) for i in manifest["items"]))
+    )
     print(_success("备份完成并通过全量 SHA-256 校验"))
     print(f"  路径: {_info(str(result.resolve()))}")
     print(f"  文件数: {len(manifest['items'])}")
-    print(f"  总大小: {manifest.get('source_bytes_total', sum(int(i['size']) for i in manifest['items']))} 字节")
+    print(f"  总大小: {total_bytes} 字节")
+    print(f"  总耗时: {elapsed:.1f} 秒")
+    rate = _processing_rate(total_bytes, elapsed)
+    if rate:
+        print(f"  平均处理吞吐(含校验): {rate}")
     print(_warning("backup 不会移除源文件；需要移除时必须显式使用 migrate。"))
     return 0
 
@@ -307,7 +328,11 @@ def cmd_migrate(args: argparse.Namespace) -> int:
         print(f"准备迁移扫描结果中的全部候选: {len(sources)} 个文件")
 
     backup = create_backup(sources, args.dest, zip_mode=args.zip, progress=_progress)
-    manifest = verify_backup(backup, progress=_progress)
+    # The creation path has already completed one full payload verification.
+    # preflight_migration below performs a fresh backup verification immediately
+    # before any destructive source-removal decision, so an extra pass here is
+    # redundant and was a significant cost for multi-gigabyte batches.
+    manifest = read_backup_manifest(backup)
     print(_success("第一阶段完成：备份已创建并通过全量 SHA-256 校验"))
     print(f"  备份: {_info(str(backup.resolve()))}")
     print(f"  文件数: {len(manifest['items'])}")
