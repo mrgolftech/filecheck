@@ -16,6 +16,10 @@ class BackupError(RuntimeError):
     pass
 
 
+_MIN_FREE_RESERVE = 16 * 1024 * 1024
+_MAX_FREE_RESERVE = 512 * 1024 * 1024
+
+
 def _is_within(child: Path, parent: Path) -> bool:
     try:
         child.resolve().relative_to(parent.resolve())
@@ -62,6 +66,41 @@ def _stream_sha256(stream: BinaryIO, chunk_size: int = 1024 * 1024) -> str:
         if not chunk:
             return digest.hexdigest()
         digest.update(chunk)
+
+
+def _sync_file(path: Path) -> None:
+    """Flush a completed file through Python's platform fsync primitive."""
+    with path.open("rb") as fh:
+        os.fsync(fh.fileno())
+
+
+def _estimate_required_bytes(files: Iterable[Path], *, zip_mode: bool) -> tuple[int, int]:
+    total = 0
+    for path in files:
+        total += path.stat().st_size
+    reserve = max(_MIN_FREE_RESERVE, min(_MAX_FREE_RESERVE, total // 20))
+    # ZIP creation currently uses a fully verified staging copy plus a temporary
+    # archive at the same time, so worst-case storage is roughly 2x input size.
+    multiplier = 2 if zip_mode else 1
+    return total, total * multiplier + reserve
+
+
+def _ensure_destination_capacity(
+    destination_root: Path, files: Iterable[Path], *, zip_mode: bool
+) -> tuple[int, int, int | None]:
+    total, required = _estimate_required_bytes(files, zip_mode=zip_mode)
+    try:
+        free = shutil.disk_usage(destination_root).free
+    except OSError:
+        # Some network/removable backends do not expose reliable free-space
+        # information. In that case writes remain fail-closed later in the flow.
+        return total, required, None
+    if free < required:
+        raise BackupError(
+            "备份目标可用空间不足："
+            f"预计至少需要 {required} 字节，当前可用 {free} 字节"
+        )
+    return total, required, free
 
 
 def _validate_manifest(manifest: dict) -> list[dict]:
@@ -181,6 +220,7 @@ def _atomic_copy_to_backup(source: Path, target: Path) -> tuple[str, os.stat_res
     before_hash = sha256_file(source)
     try:
         shutil.copy2(source, temp)
+        _sync_file(temp)
         copied_hash = sha256_file(temp)
         after = source.stat()
         after_hash = sha256_file(source)
@@ -193,6 +233,7 @@ def _atomic_copy_to_backup(source: Path, target: Path) -> tuple[str, os.stat_res
         if before_hash != copied_hash:
             raise BackupError(f"备份 SHA-256 校验失败: {source}")
         os.replace(temp, target)
+        _sync_file(target)
         return before_hash, before
     finally:
         try:
@@ -208,8 +249,10 @@ def _create_zip_from_staging(staging: Path, archive: Path) -> None:
             for path in staging.rglob("*"):
                 if path.is_file():
                     zf.write(path, path.relative_to(staging).as_posix())
+        _sync_file(temp_archive)
         verify_backup(temp_archive)
         os.replace(temp_archive, archive)
+        _sync_file(archive)
         verify_backup(archive)
     finally:
         try:
@@ -228,11 +271,15 @@ def create_backup(
     destination_root = Path(destination_root).expanduser().resolve()
     destination_root.mkdir(parents=True, exist_ok=True)
     files = _collect_files(sources, destination_root)
+    source_bytes, required_bytes, free_bytes = _ensure_destination_capacity(
+        destination_root, files, zip_mode=zip_mode
+    )
 
     batch_id = make_batch_id()
-    staging = destination_root / batch_id
+    staging = destination_root / f".{batch_id}.incomplete"
+    final_dir = destination_root / batch_id
     archive = destination_root / f"{batch_id}.zip"
-    if staging.exists() or archive.exists():
+    if staging.exists() or final_dir.exists() or archive.exists():
         raise BackupError(f"备份批次已存在: {batch_id}")
     staging.mkdir(parents=True)
 
@@ -242,6 +289,9 @@ def create_backup(
         "created_at": now_iso(),
         "mode": "zip" if zip_mode else "directory",
         "source_removed": False,
+        "source_bytes_total": source_bytes,
+        "space_required_estimate": required_bytes,
+        "space_free_at_start": free_bytes,
         "items": [],
     }
 
@@ -267,18 +317,27 @@ def create_backup(
         write_json(staging / "manifest.json", manifest)
         verify_backup(staging)
 
-        result: Path = staging
         if zip_mode:
             _create_zip_from_staging(staging, archive)
             shutil.rmtree(staging)
-            result = archive
+            result: Path = archive
+        else:
+            os.replace(staging, final_dir)
+            result = final_dir
 
         verify_backup(result)
         completed = True
         return result
     finally:
-        if not completed and staging.exists():
-            shutil.rmtree(staging, ignore_errors=True)
+        if not completed:
+            if staging.exists():
+                shutil.rmtree(staging, ignore_errors=True)
+            if final_dir.exists():
+                shutil.rmtree(final_dir, ignore_errors=True)
+            try:
+                archive.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 def _resolve_conflict(path: Path, mode: str) -> Path | None:
@@ -309,6 +368,7 @@ def _finish_atomic_restore(temp: Path, target: Path, item: dict) -> None:
     # Atomic replacement on the same filesystem: an existing target is not
     # touched until the temporary restored copy has passed SHA-256 verification.
     os.replace(temp, target)
+    _sync_file(target)
     if target.stat().st_size != item["size"] or sha256_file(target) != item["sha256"]:
         raise BackupError(f"恢复后最终 SHA-256 校验失败: {target}")
 
@@ -321,6 +381,7 @@ def _restore_one_from_file(source: Path, item: dict, conflict: str) -> tuple[str
     temp = _restore_temp_path(target)
     try:
         shutil.copy2(source, temp)
+        _sync_file(temp)
         _finish_atomic_restore(temp, target, item)
     finally:
         try:
