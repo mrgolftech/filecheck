@@ -6,9 +6,8 @@ import os
 import shutil
 import stat
 import uuid
-import zipfile
 from pathlib import Path, PureWindowsPath
-from typing import BinaryIO, Callable, Iterable
+from typing import Callable, Iterable
 
 from .util import backup_relpath, choose_renamed_path, make_batch_id, now_iso, sha256_file, write_json
 
@@ -40,52 +39,31 @@ def _is_within(child: Path, parent: Path) -> bool:
 def _collect_files(sources: Iterable[str | Path], destination_root: Path) -> list[Path]:
     files: list[Path] = []
     seen: set[str] = set()
-
     for raw in sources:
         source = Path(raw).expanduser()
         if not source.exists():
             raise BackupError(f"源路径不存在: {source}")
         if source.is_symlink():
-            raise BackupError(f"V0.1 不处理符号链接/重解析入口: {source}")
+            raise BackupError(f"不处理符号链接/重解析入口: {source}")
         if source.is_dir() and _is_within(destination_root, source):
             raise BackupError(f"备份目标不能位于待备份源目录内部: {source}")
-
         if source.is_file():
             candidates = [source]
         elif source.is_dir():
             candidates = [p for p in source.rglob("*") if p.is_file() and not p.is_symlink()]
         else:
             continue
-
         for candidate in candidates:
             key = os.path.normcase(os.path.abspath(str(candidate)))
             if key not in seen:
                 seen.add(key)
                 files.append(candidate)
-
     if not files:
         raise BackupError("没有可备份的普通文件")
     return files
 
 
-def _stream_sha256(stream: BinaryIO, chunk_size: int = _IO_CHUNK_SIZE) -> str:
-    digest = hashlib.sha256()
-    while True:
-        chunk = stream.read(chunk_size)
-        if not chunk:
-            return digest.hexdigest()
-        digest.update(chunk)
-
-
 def _sync_file(path: Path) -> None:
-    """Flush file data using a writable handle on Windows/POSIX.
-
-    Windows rejects ``os.fsync`` on a read-only descriptor. A copied source may
-    also preserve a read-only attribute onto the temporary copy, so this helper
-    temporarily enables owner-write only when required, flushes the file, and
-    restores the original mode before returning.
-    """
-
     def flush_with_write_handle() -> None:
         with path.open("r+b") as fh:
             fh.flush()
@@ -106,26 +84,17 @@ def _sync_file(path: Path) -> None:
                 pass
 
 
-def _estimate_required_bytes(files: Iterable[Path], *, zip_mode: bool) -> tuple[int, int]:
-    total = 0
-    for path in files:
-        total += path.stat().st_size
+def _estimate_required_bytes(files: Iterable[Path]) -> tuple[int, int]:
+    total = sum(path.stat().st_size for path in files)
     reserve = max(_MIN_FREE_RESERVE, min(_MAX_FREE_RESERVE, total // 20))
-    # ZIP creation keeps a staging copy plus a temporary archive at the same
-    # time, so worst-case storage is roughly 2x input size.
-    multiplier = 2 if zip_mode else 1
-    return total, total * multiplier + reserve
+    return total, total + reserve
 
 
-def _ensure_destination_capacity(
-    destination_root: Path, files: Iterable[Path], *, zip_mode: bool
-) -> tuple[int, int, int | None]:
-    total, required = _estimate_required_bytes(files, zip_mode=zip_mode)
+def _ensure_destination_capacity(destination_root: Path, files: Iterable[Path]) -> tuple[int, int, int | None]:
+    total, required = _estimate_required_bytes(files)
     try:
         free = shutil.disk_usage(destination_root).free
     except OSError:
-        # Some network/removable backends do not expose reliable free-space
-        # information. In that case writes remain fail-closed later in the flow.
         return total, required, None
     if free < required:
         raise BackupError(
@@ -138,6 +107,8 @@ def _ensure_destination_capacity(
 def _validate_manifest(manifest: dict) -> list[dict]:
     if manifest.get("schema_version") != 1:
         raise BackupError("不支持的 manifest schema_version")
+    if manifest.get("mode", "directory") != "directory":
+        raise BackupError("v0.1.1 只支持目录备份；请先将旧 ZIP 备份解压为完整目录后再使用")
     items = manifest.get("items")
     if not isinstance(items, list) or not items:
         raise BackupError("manifest 中没有有效 items")
@@ -148,17 +119,14 @@ def _validate_manifest(manifest: dict) -> list[dict]:
         for key in ("source_path", "backup_path", "size", "sha256"):
             if key not in item:
                 raise BackupError(f"manifest item 缺少字段: {key}")
-
         backup_path = PureWindowsPath(str(item["backup_path"]).replace("/", "\\"))
         if backup_path.is_absolute() or ".." in backup_path.parts:
             raise BackupError(f"非法 backup_path: {item['backup_path']}")
         if not backup_path.parts or backup_path.parts[0].lower() != "files":
             raise BackupError(f"backup_path 必须位于 files/ 下: {item['backup_path']}")
-
         source_text = str(item["source_path"])
         if not (Path(source_text).is_absolute() or PureWindowsPath(source_text).is_absolute()):
             raise BackupError(f"source_path 不是绝对路径: {source_text}")
-
         bkey = str(item["backup_path"]).replace("\\", "/").lower()
         skey = os.path.normcase(source_text)
         if bkey in seen_backup:
@@ -167,120 +135,46 @@ def _validate_manifest(manifest: dict) -> list[dict]:
             raise BackupError(f"manifest 中 source_path 重复: {source_text}")
         seen_backup.add(bkey)
         seen_source.add(skey)
-
         digest = str(item["sha256"]).lower()
         if len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
             raise BackupError(f"非法 SHA-256: {source_text}")
         if not isinstance(item["size"], int) or item["size"] < 0:
             raise BackupError(f"非法文件大小: {source_text}")
-
     return items
 
 
-def _read_manifest_from_dir(source: Path) -> dict:
-    manifest_path = source / "manifest.json"
+def read_backup_manifest(source: str | Path) -> dict:
+    source_path = Path(source).expanduser()
+    if not source_path.is_dir():
+        raise BackupError(f"v0.1.1 只支持已解压的目录备份: {source_path}")
+    manifest_path = source_path / "manifest.json"
     if not manifest_path.is_file():
-        raise BackupError(f"未找到 manifest.json: {source}")
+        raise BackupError(f"未找到 manifest.json: {source_path}")
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-        raise BackupError(f"manifest.json 损坏: {source}") from exc
+        raise BackupError(f"manifest.json 损坏: {source_path}") from exc
     _validate_manifest(manifest)
     return manifest
-
-
-def _read_manifest_from_zip(zf: zipfile.ZipFile) -> dict:
-    try:
-        raw = zf.read("manifest.json")
-    except KeyError as exc:
-        raise BackupError("ZIP 中没有 manifest.json") from exc
-    try:
-        manifest = json.loads(raw.decode("utf-8"))
-    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-        raise BackupError("ZIP 中 manifest.json 损坏") from exc
-    _validate_manifest(manifest)
-    return manifest
-
-
-def read_backup_manifest(source: str | Path) -> dict:
-    """Read and structurally validate a manifest without re-hashing payloads.
-
-    Use this for metadata display after ``create_backup`` has already returned,
-    because ``create_backup`` only publishes a batch after one full SHA-256
-    verification. Standalone trust decisions must still call ``verify_backup``.
-    """
-
-    source = Path(source).expanduser()
-    if not source.exists():
-        raise BackupError(f"备份不存在: {source}")
-    if source.is_dir():
-        return _read_manifest_from_dir(source)
-    if not zipfile.is_zipfile(source):
-        raise BackupError(f"不是有效 ZIP 备份: {source}")
-    try:
-        with zipfile.ZipFile(source, "r") as zf:
-            return _read_manifest_from_zip(zf)
-    except zipfile.BadZipFile as exc:
-        raise BackupError(f"ZIP 备份损坏或不可读: {source}") from exc
 
 
 def verify_backup(source: str | Path, *, progress: ProgressCallback | None = None) -> dict:
-    """Verify every backed-up payload against its original SHA-256 manifest."""
-    source = Path(source).expanduser()
-    if not source.exists():
-        raise BackupError(f"备份不存在: {source}")
-
-    if source.is_dir():
-        manifest = _read_manifest_from_dir(source)
-        total = len(manifest["items"])
-        for index, item in enumerate(manifest["items"], start=1):
-            stored = source / Path(str(item["backup_path"]).replace("/", os.sep))
-            if not stored.is_file():
-                raise BackupError(f"备份文件缺失: {stored}")
-            if stored.stat().st_size != item["size"]:
-                raise BackupError(f"备份文件大小不一致: {stored}")
-            if sha256_file(stored).lower() != item["sha256"].lower():
-                raise BackupError(f"备份文件 SHA-256 不一致: {stored}")
-            _notify(progress, "verify", index, total, stored)
-        return manifest
-
-    if not zipfile.is_zipfile(source):
-        raise BackupError(f"不是有效 ZIP 备份: {source}")
-    try:
-        with zipfile.ZipFile(source, "r") as zf:
-            bad = zf.testzip()
-            if bad:
-                raise BackupError(f"ZIP CRC 完整性检查失败: {bad}")
-            manifest = _read_manifest_from_zip(zf)
-            names = set(zf.namelist())
-            total = len(manifest["items"])
-            for index, item in enumerate(manifest["items"], start=1):
-                member = str(item["backup_path"]).replace("\\", "/")
-                if member not in names:
-                    raise BackupError(f"ZIP 中缺少备份文件: {member}")
-                info = zf.getinfo(member)
-                if info.file_size != item["size"]:
-                    raise BackupError(f"ZIP 文件大小不一致: {member}")
-                with zf.open(member, "r") as stream:
-                    digest = _stream_sha256(stream)
-                if digest.lower() != item["sha256"].lower():
-                    raise BackupError(f"ZIP 文件 SHA-256 不一致: {member}")
-                _notify(progress, "verify", index, total, member)
-            return manifest
-    except zipfile.BadZipFile as exc:
-        raise BackupError(f"ZIP 备份损坏或不可读: {source}") from exc
+    source_path = Path(source).expanduser()
+    manifest = read_backup_manifest(source_path)
+    total = len(manifest["items"])
+    for index, item in enumerate(manifest["items"], start=1):
+        stored = source_path / Path(str(item["backup_path"]).replace("/", os.sep))
+        if not stored.is_file():
+            raise BackupError(f"备份文件缺失: {stored}")
+        if stored.stat().st_size != item["size"]:
+            raise BackupError(f"备份文件大小不一致: {stored}")
+        if sha256_file(stored).lower() != item["sha256"].lower():
+            raise BackupError(f"备份文件 SHA-256 不一致: {stored}")
+        _notify(progress, "verify", index, total, stored)
+    return manifest
 
 
 def _copy_source_to_temp_with_hash(source: Path, temp: Path) -> tuple[str, int]:
-    """Copy once while hashing the exact byte stream written to the backup.
-
-    The old implementation hashed the source, copied it, hashed the temporary
-    copy, then hashed the source again. That was intentionally conservative but
-    turned one logical backup into several full-disk read passes. Here the source
-    is read once; SHA-256 is calculated during that same read. The completed
-    batch is still independently re-read and SHA-256 verified before publication.
-    """
-
     digest = hashlib.sha256()
     copied = 0
     with source.open("rb") as src, temp.open("xb") as dst:
@@ -292,10 +186,6 @@ def _copy_source_to_temp_with_hash(source: Path, temp: Path) -> tuple[str, int]:
             digest.update(chunk)
             copied += len(chunk)
         dst.flush()
-
-    # Preserve the same basic metadata promise as shutil.copy2. Metadata is set
-    # before the one durability flush so both payload and basic file metadata are
-    # committed together as far as the platform permits.
     shutil.copystat(source, temp, follow_symlinks=False)
     _sync_file(temp)
     return digest.hexdigest(), copied
@@ -306,22 +196,13 @@ def _source_snapshot_changed(before: os.stat_result, after: os.stat_result, copi
         return True
     if before.st_size != after.st_size or before.st_mtime_ns != after.st_mtime_ns:
         return True
-
-    before_dev = getattr(before, "st_dev", None)
-    after_dev = getattr(after, "st_dev", None)
-    if before_dev is not None and after_dev is not None and before_dev != after_dev:
-        return True
-
     before_ino = getattr(before, "st_ino", 0)
     after_ino = getattr(after, "st_ino", 0)
     if before_ino and after_ino and before_ino != after_ino:
         return True
-
     before_ctime = getattr(before, "st_ctime_ns", None)
     after_ctime = getattr(after, "st_ctime_ns", None)
-    if before_ctime is not None and after_ctime is not None and before_ctime != after_ctime:
-        return True
-    return False
+    return bool(before_ctime is not None and after_ctime is not None and before_ctime != after_ctime)
 
 
 def _atomic_copy_to_backup(source: Path, target: Path) -> tuple[str, os.stat_result]:
@@ -333,11 +214,6 @@ def _atomic_copy_to_backup(source: Path, target: Path) -> tuple[str, os.stat_res
         after = source.stat()
         if _source_snapshot_changed(before, after, copied):
             raise BackupError(f"源文件在备份过程中发生变化，拒绝继续: {source}")
-
-        # The temporary payload was flushed above. Publishing is a same-directory
-        # rename; a later full verify re-reads the stored file before the batch is
-        # considered complete. Avoiding another per-file flush here materially
-        # improves many-small-file performance on USB/HDD targets.
         os.replace(temp, target)
         return source_hash, before
     finally:
@@ -347,62 +223,22 @@ def _atomic_copy_to_backup(source: Path, target: Path) -> tuple[str, os.stat_res
             pass
 
 
-def _create_zip_from_staging(
-    staging: Path,
-    archive: Path,
-    *,
-    progress: ProgressCallback | None = None,
-) -> None:
-    temp_archive = archive.with_name(f".{archive.stem}.{uuid.uuid4().hex}.tmp.zip")
-    try:
-        # Level 1 favors backup throughput. Most common office/PDF/archive inputs
-        # are already compressed, so higher DEFLATE levels often add CPU time for
-        # little practical space reduction.
-        with zipfile.ZipFile(
-            temp_archive,
-            "w",
-            compression=zipfile.ZIP_DEFLATED,
-            compresslevel=1,
-            allowZip64=True,
-        ) as zf:
-            for path in staging.rglob("*"):
-                if path.is_file():
-                    zf.write(path, path.relative_to(staging).as_posix())
-        _sync_file(temp_archive)
-
-        # One full ZIP verification is enough: it validates CRC, manifest, member
-        # sizes and SHA-256 for every payload. Renaming the already verified file
-        # does not alter its bytes, so a second/third archive pass is redundant.
-        verify_backup(temp_archive, progress=progress)
-        os.replace(temp_archive, archive)
-        _sync_file(archive)
-    finally:
-        try:
-            temp_archive.unlink(missing_ok=True)
-        except OSError:
-            pass
-
-
 def create_backup(
     sources: Iterable[str | Path],
     destination_root: str | Path,
     *,
-    zip_mode: bool = False,
     progress: ProgressCallback | None = None,
 ) -> Path:
-    """Create and fully verify a backup. This function never removes source files."""
+    """Create a human-readable directory backup and fully verify it."""
     destination_root = Path(destination_root).expanduser().resolve()
     destination_root.mkdir(parents=True, exist_ok=True)
     files = _collect_files(sources, destination_root)
-    source_bytes, required_bytes, free_bytes = _ensure_destination_capacity(
-        destination_root, files, zip_mode=zip_mode
-    )
+    source_bytes, required_bytes, free_bytes = _ensure_destination_capacity(destination_root, files)
 
     batch_id = make_batch_id()
     staging = destination_root / f".{batch_id}.incomplete"
     final_dir = destination_root / batch_id
-    archive = destination_root / f"{batch_id}.zip"
-    if staging.exists() or final_dir.exists() or archive.exists():
+    if staging.exists() or final_dir.exists():
         raise BackupError(f"备份批次已存在: {batch_id}")
     staging.mkdir(parents=True)
 
@@ -410,9 +246,9 @@ def create_backup(
         "schema_version": 1,
         "batch_id": batch_id,
         "created_at": now_iso(),
-        "mode": "zip" if zip_mode else "directory",
-        "source_removed": False,
+        "mode": "directory",
         "copy_strategy": "single-pass-sha256-v1",
+        "storage_layout": "mirrored-source-tree-v1",
         "source_bytes_total": source_bytes,
         "space_required_estimate": required_bytes,
         "space_free_at_start": free_bytes,
@@ -435,39 +271,20 @@ def create_backup(
                     "mtime_ns": source_stat.st_mtime_ns,
                     "sha256": source_hash,
                     "backup_verified": True,
-                    "source_removed": False,
                 }
             )
             _notify(progress, "copy", index, total, source)
-
         write_json(staging / "manifest.json", manifest)
-
-        if zip_mode:
-            # The ZIP verification below compares every archived member directly
-            # with the source hash stored in manifest, so an additional staging
-            # verification pass would only re-read the same payloads.
-            _create_zip_from_staging(staging, archive, progress=progress)
-            shutil.rmtree(staging)
-            result: Path = archive
-        else:
-            # Directory mode performs exactly one full independent payload verify
-            # before the verified staging tree is atomically published by rename.
-            verify_backup(staging, progress=progress)
-            os.replace(staging, final_dir)
-            result = final_dir
-
+        verify_backup(staging, progress=progress)
+        os.replace(staging, final_dir)
         completed = True
-        return result
+        return final_dir
     finally:
         if not completed:
             if staging.exists():
                 shutil.rmtree(staging, ignore_errors=True)
             if final_dir.exists():
                 shutil.rmtree(final_dir, ignore_errors=True)
-            try:
-                archive.unlink(missing_ok=True)
-            except OSError:
-                pass
 
 
 def _resolve_conflict(path: Path, mode: str) -> Path | None:
@@ -495,30 +312,10 @@ def _finish_atomic_restore(temp: Path, target: Path, item: dict) -> None:
             os.utime(temp, ns=(mtime_ns, mtime_ns))
         except OSError:
             pass
-    # Atomic replacement on the same filesystem: an existing target is not
-    # touched until the temporary restored copy has passed SHA-256 verification.
     os.replace(temp, target)
     _sync_file(target)
     if target.stat().st_size != item["size"] or sha256_file(target) != item["sha256"]:
         raise BackupError(f"恢复后最终 SHA-256 校验失败: {target}")
-
-
-def _restore_one_from_file(source: Path, item: dict, conflict: str) -> tuple[str, str]:
-    target = _resolve_conflict(Path(item["source_path"]), conflict)
-    if target is None:
-        return item["source_path"], "skipped"
-    target.parent.mkdir(parents=True, exist_ok=True)
-    temp = _restore_temp_path(target)
-    try:
-        shutil.copy2(source, temp)
-        _sync_file(temp)
-        _finish_atomic_restore(temp, target, item)
-    finally:
-        try:
-            temp.unlink(missing_ok=True)
-        except OSError:
-            pass
-    return str(target), "restored"
 
 
 def _preflight_restore_targets(items: list[dict]) -> None:
@@ -541,43 +338,30 @@ def restore_backup(
     conflict: str = "skip",
     progress: ProgressCallback | None = None,
 ) -> list[dict]:
-    source = Path(source).expanduser()
-    # Safety invariant: verify the entire backup before touching any target.
-    manifest = verify_backup(source)
+    source_path = Path(source).expanduser()
+    manifest = verify_backup(source_path)
     items = manifest["items"]
     _preflight_restore_targets(items)
-
     results: list[dict] = []
     total = len(items)
-    if source.is_dir():
-        for index, item in enumerate(items, start=1):
-            stored = source / Path(str(item["backup_path"]).replace("/", os.sep))
-            target, state_value = _restore_one_from_file(stored, item, conflict)
-            results.append({"target": target, "state": state_value})
-            _notify(progress, "restore", index, total, target)
-        return results
-
-    with zipfile.ZipFile(source, "r") as zf:
-        for index, item in enumerate(items, start=1):
-            target = _resolve_conflict(Path(item["source_path"]), conflict)
-            if target is None:
-                results.append({"target": item["source_path"], "state": "skipped"})
-                _notify(progress, "restore", index, total, item["source_path"])
-                continue
-            target.parent.mkdir(parents=True, exist_ok=True)
-            member = str(item["backup_path"]).replace("\\", "/")
-            temp = _restore_temp_path(target)
+    for index, item in enumerate(items, start=1):
+        target = _resolve_conflict(Path(item["source_path"]), conflict)
+        if target is None:
+            results.append({"target": item["source_path"], "state": "skipped"})
+            _notify(progress, "restore", index, total, item["source_path"])
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        stored = source_path / Path(str(item["backup_path"]).replace("/", os.sep))
+        temp = _restore_temp_path(target)
+        try:
+            shutil.copy2(stored, temp)
+            _sync_file(temp)
+            _finish_atomic_restore(temp, target, item)
+        finally:
             try:
-                with zf.open(member, "r") as src, temp.open("wb") as dst:
-                    shutil.copyfileobj(src, dst, length=_IO_CHUNK_SIZE)
-                    dst.flush()
-                    os.fsync(dst.fileno())
-                _finish_atomic_restore(temp, target, item)
-            finally:
-                try:
-                    temp.unlink(missing_ok=True)
-                except OSError:
-                    pass
-            results.append({"target": str(target), "state": "restored"})
-            _notify(progress, "restore", index, total, target)
+                temp.unlink(missing_ok=True)
+            except OSError:
+                pass
+        results.append({"target": str(target), "state": "restored"})
+        _notify(progress, "restore", index, total, target)
     return results
