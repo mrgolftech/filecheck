@@ -202,7 +202,6 @@ def _run_scan_flow() -> tuple[Path, dict] | None:
     if rc != 0:
         return None
     payload = _load_scan(output)
-    _print_capacity(payload)
     return output, payload
 
 
@@ -269,7 +268,6 @@ def _process_scan(scan_path: Path, payload: dict, *, fixed_action: str | None = 
 def _existing_scan_flow(*, migrate: bool | None = None) -> int:
     path = Path(_ask("请输入 scan-results.json 路径")).expanduser()
     payload = _load_scan(path)
-    _print_capacity(payload)
     if migrate is None:
         return _process_scan(path, payload)
 
