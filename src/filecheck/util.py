@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import re
+import uuid
 from datetime import datetime
 from pathlib import Path, PureWindowsPath
 from typing import Any
@@ -14,7 +15,8 @@ def now_iso() -> str:
 
 
 def make_batch_id() -> str:
-    return datetime.now().astimezone().strftime("FC-%Y%m%d-%H%M%S")
+    stamp = datetime.now().astimezone().strftime("%Y%m%d-%H%M%S")
+    return f"FC-{stamp}-{uuid.uuid4().hex[:8]}"
 
 
 def sha256_file(path: Path, chunk_size: int = 1024 * 1024) -> str:
