@@ -62,28 +62,28 @@ def test_copy_failure_keeps_state_and_resumes_without_recopying_valid_payloads(
     assert {Path(item["source_path"]).name for item in manifest["items"]} == {"a.txt", "b.txt", "c.txt"}
 
 
-def test_compact_storage_layout_does_not_mirror_deep_source_tree(
+def test_storage_layout_mirrors_source_tree_for_manual_inspection(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _use_test_appdata(tmp_path, monkeypatch)
-    deep = tmp_path
-    for index in range(8):
-        deep = deep / ("very-long-directory-name-" + str(index))
-    deep.mkdir(parents=True)
-    source = deep / "报告版本 V2.4.pdf"
+    source = tmp_path / "项目A" / "参考资料" / "子目录" / "报告版本 V2.4.pdf"
+    source.parent.mkdir(parents=True)
     source.write_bytes(b"payload")
 
-    result, _state_path, _state = resumable.create_resumable_backup(
+    result, _state_path, state = resumable.create_resumable_backup(
         [source],
         tmp_path / "backup",
-        batch_id="FC-20260907-COMPACT1",
+        batch_id="FC-20260907-MIRROR01",
     )
     manifest = read_backup_manifest(result)
-    backup_path = manifest["items"][0]["backup_path"]
+    item = manifest["items"][0]
+    backup_path = item["backup_path"]
 
+    assert state["storage_layout"] == "mirrored-source-tree-v1"
+    assert manifest["storage_layout"] == "mirrored-source-tree-v1"
     assert backup_path.startswith("files/")
-    assert "very-long-directory-name" not in backup_path
-    assert len(backup_path) < 100
+    assert "项目A/参考资料/子目录/报告版本 V2.4.pdf" in backup_path
+    assert (result / Path(backup_path)).is_file()
     verify_backup(result)
 
 
