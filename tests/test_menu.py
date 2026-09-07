@@ -7,10 +7,9 @@ import filecheck.menu as menu
 from filecheck.backup import create_backup, verify_backup
 
 
-def _payload(sizes: list[int | None], *, path_filter: str | None = None) -> dict:
+def _payload(sizes: list[int | None]) -> dict:
     return {
         "schema_version": 1,
-        "path_filter": path_filter,
         "items": [
             {
                 "path": f"C:/test/f-{index}.txt",
@@ -27,7 +26,7 @@ def _payload(sizes: list[int | None], *, path_filter: str | None = None) -> dict
     }
 
 
-def test_capacity_summary_matches_current_backup_formula() -> None:
+def test_capacity_summary_matches_directory_backup_formula() -> None:
     payload = _payload([10 * 1024 * 1024, 20 * 1024 * 1024, None])
     metrics = menu._capacity_from_scan(payload)
 
@@ -36,7 +35,7 @@ def test_capacity_summary_matches_current_backup_formula() -> None:
     assert metrics["unknown"] == 1
     assert metrics["payload_bytes"] == 30 * 1024 * 1024
     assert metrics["directory_required"] == 46 * 1024 * 1024
-    assert metrics["zip_required"] == 76 * 1024 * 1024
+    assert "zip_required" not in metrics
 
 
 def test_format_bytes_is_human_readable() -> None:
@@ -60,65 +59,68 @@ def test_menu_can_exit_without_running_subcommands(monkeypatch) -> None:
     assert menu.main([]) == 0
 
 
-def test_scan_flow_passes_user_selected_path(tmp_path: Path, monkeypatch) -> None:
+def test_scan_flow_uses_configured_index_and_default_filename_matching(tmp_path: Path, monkeypatch) -> None:
     output = tmp_path / "scan-results.json"
     calls: list[list[str]] = []
 
-    answers = iter(["2", r"D:\\Engineering", "n"])
-    monkeypatch.setattr("builtins.input", lambda _prompt: next(answers))
+    monkeypatch.setattr(menu, "_index_state", lambda: {"selected_roots": ["C:"]})
     monkeypatch.setattr(menu, "_default_scan_output", lambda: output)
+    monkeypatch.setattr("builtins.input", lambda _prompt: "")
 
     def fake_cli_main(argv: list[str]) -> int:
         calls.append(list(argv))
-        output.write_text(json.dumps(_payload([123], path_filter=r"D:\\Engineering")), encoding="utf-8")
+        output.write_text(json.dumps(_payload([123])), encoding="utf-8")
         return 0
 
     monkeypatch.setattr(menu.cli, "main", fake_cli_main)
     result = menu._run_scan_flow()
 
     assert result is not None
-    assert calls
     command = calls[0]
     assert command[0] == "scan"
-    assert "--path" in command
-    assert r"D:\\Engineering" in command
     assert "--match-path" not in command
+    assert "--path" not in command
 
 
-def test_bulk_backup_menu_never_requires_per_file_selection(tmp_path: Path, monkeypatch) -> None:
+def test_scan_flow_can_enable_path_keyword_matching(tmp_path: Path, monkeypatch) -> None:
+    output = tmp_path / "scan-results.json"
+    calls: list[list[str]] = []
+    monkeypatch.setattr(menu, "_index_state", lambda: {"selected_roots": ["C:"]})
+    monkeypatch.setattr(menu, "_default_scan_output", lambda: output)
+    monkeypatch.setattr("builtins.input", lambda _prompt: "y")
+
+    def fake_cli_main(argv: list[str]) -> int:
+        calls.append(list(argv))
+        output.write_text(json.dumps(_payload([123])), encoding="utf-8")
+        return 0
+
+    monkeypatch.setattr(menu.cli, "main", fake_cli_main)
+    assert menu._run_scan_flow() is not None
+    assert "--match-path" in calls[0]
+
+
+def test_backup_flow_processes_all_scan_candidates_without_selection(tmp_path: Path, monkeypatch) -> None:
     scan = tmp_path / "scan-results.json"
     payload = _payload([100, 200])
     scan.write_text(json.dumps(payload), encoding="utf-8")
     destination = tmp_path / "backup"
-
+    destination.mkdir()
     calls: list[list[str]] = []
-    answers = iter([str(destination), ""])
-    monkeypatch.setattr("builtins.input", lambda _prompt: next(answers))
+
+    monkeypatch.setattr(menu, "_choose_scan_file", lambda: scan)
+    monkeypatch.setattr(menu, "_load_scan", lambda _path: payload)
+    monkeypatch.setattr(menu, "_backup_root", lambda: destination)
+    monkeypatch.setattr(menu, "_destination_free_bytes", lambda _path: 1024**3)
+    monkeypatch.setattr(menu, "_ask_yes_no", lambda *args, **kwargs: True)
     monkeypatch.setattr(menu.cli, "main", lambda argv: calls.append(list(argv)) or 0)
 
-    rc = menu._process_scan(scan, payload, fixed_action="1")
-    assert rc == 0
+    assert menu._backup_flow() == 0
     assert calls == [["backup", "--from-scan", str(scan), "--dest", str(destination)]]
     assert "--select" not in calls[0]
+    assert "--zip" not in calls[0]
 
 
-def test_migrate_menu_keeps_destructive_yes_confirmation_in_cli(tmp_path: Path, monkeypatch) -> None:
-    scan = tmp_path / "scan-results.json"
-    payload = _payload([100])
-    destination = tmp_path / "backup"
-
-    calls: list[list[str]] = []
-    answers = iter([str(destination), ""])
-    monkeypatch.setattr("builtins.input", lambda _prompt: next(answers))
-    monkeypatch.setattr(menu.cli, "main", lambda argv: calls.append(list(argv)) or 0)
-
-    rc = menu._process_scan(scan, payload, fixed_action="3")
-    assert rc == 0
-    assert calls[0][0] == "migrate"
-    assert "--yes" not in calls[0]
-
-
-def test_delete_sources_flow_uses_completed_backup_manifest_and_keeps_backup(
+def test_delete_sources_flow_uses_backup_local_state_and_keeps_backup(
     tmp_path: Path, monkeypatch
 ) -> None:
     source = tmp_path / "source" / "项目A" / "报告.txt"
@@ -127,11 +129,12 @@ def test_delete_sources_flow_uses_completed_backup_manifest_and_keeps_backup(
     backup = create_backup([source], tmp_path / "backup")
     verify_backup(backup)
 
-    answers = iter([str(backup), "YES"])
-    monkeypatch.setattr("builtins.input", lambda _prompt: next(answers))
+    monkeypatch.setattr(menu, "_choose_backup", lambda: backup)
+    monkeypatch.setattr("builtins.input", lambda _prompt: "YES")
 
     rc = menu._delete_sources_flow()
     assert rc == 0
     assert not source.exists()
     verify_backup(backup)
-    assert (backup.parent / f"{backup.name}.migration.json").is_file()
+    assert (backup / "source-removal.json").is_file()
+    assert (backup / "manifest.json").is_file()
