@@ -129,8 +129,16 @@ def cmd_scan(args: argparse.Namespace) -> int:
         "items": items,
     }
     write_json(output, payload)
-    print(f"\n扫描结果已保存: {_info(str(output.resolve()))}")
+    resolved_output = output.resolve()
+    print(f"\n扫描结果已保存: {_info(str(resolved_output))}")
     print(_warning("注意：结果仅表示关键词命中，需要人工复核。"))
+    if items:
+        print(_info("下一步：人工复核候选编号后，再选择文件进行备份。"))
+        print(
+            "  示例: filecheck backup --from-scan "
+            f'"{resolved_output}" --select 1,3-5 --dest <备份目录>'
+        )
+        print(_warning("扫描结束后不会自动备份、移动或删除任何文件。"))
     return 0
 
 
