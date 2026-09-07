@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -36,6 +37,12 @@ def find_es(explicit: str | None = None) -> Path:
     if os.environ.get("FILECHECK_ES"):
         candidates.append(Path(os.environ["FILECHECK_ES"]))
 
+    # The Win64 release bundles ES next to FileCheck.exe under tools/.  Do not
+    # depend on the caller's current working directory: users may launch the EXE
+    # from Explorer, a shortcut, PowerShell, or another working directory.
+    if getattr(sys, "frozen", False):
+        candidates.append(Path(sys.executable).resolve().parent / "tools" / "es.exe")
+
     candidates.append(Path.cwd() / "tools" / "es.exe")
 
     located = shutil.which("es.exe") or shutil.which("es")
@@ -62,8 +69,8 @@ def find_es(explicit: str | None = None) -> Path:
             return candidate
 
     raise EverythingError(
-        "未找到 es.exe。请将 ES CLI 放到 tools/es.exe、加入 PATH，"
-        "或设置 FILECHECK_ES 环境变量。"
+        "未找到 es.exe。Win64 发布包应自带 tools/es.exe；开发版可将 ES CLI 放到 "
+        "tools/es.exe、加入 PATH，或设置 FILECHECK_ES 环境变量。"
     )
 
 
