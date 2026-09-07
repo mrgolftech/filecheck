@@ -1,0 +1,59 @@
+name: Refresh test-plan baseline once
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/refresh-testplan-baseline-once.yml
+
+permissions:
+  contents: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Remove stale fixed test count
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('docs/TEST_PLAN.md')
+          text = p.read_text(encoding='utf-8')
+          old = '''当前回归基线：
+
+          ```text
+          48 automated tests PASS
+          Windows 3.10       PASS
+          Windows 3.12       PASS
+          Ubuntu 3.10        PASS
+          Ubuntu 3.12        PASS
+          selftest × 4       PASS
+          ```
+          '''
+          new = '''当前回归基线以 GitHub Actions 的实际运行结果为准，不在文档中固定自动化测试数量，避免新增测试后数字失真。主干门禁要求：
+
+          ```text
+          Windows 3.10       PASS
+          Windows 3.12       PASS
+          Ubuntu 3.10        PASS
+          Ubuntu 3.12        PASS
+          selftest × 4       PASS
+          Win7 x64 兼容构建   PASS
+          ```
+          '''
+          import textwrap
+          old = textwrap.dedent(old)
+          new = textwrap.dedent(new)
+          if old not in text:
+              raise SystemExit('baseline block not found')
+          p.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
+      - name: Commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/TEST_PLAN.md
+          git diff --cached --check
+          git commit -m "docs: keep test baseline aligned with CI"
+          git push origin HEAD:main
