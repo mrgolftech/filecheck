@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import filecheck.menu as menu
+from filecheck.backup import create_backup, verify_backup
 
 
 def _payload(sizes: list[int | None], *, path_filter: str | None = None) -> dict:
@@ -34,7 +35,6 @@ def test_capacity_summary_matches_current_backup_formula() -> None:
     assert metrics["accessible"] == 2
     assert metrics["unknown"] == 1
     assert metrics["payload_bytes"] == 30 * 1024 * 1024
-    # 5% would be below the 16 MiB minimum reserve.
     assert metrics["directory_required"] == 46 * 1024 * 1024
     assert metrics["zip_required"] == 76 * 1024 * 1024
 
@@ -116,3 +116,22 @@ def test_migrate_menu_keeps_destructive_yes_confirmation_in_cli(tmp_path: Path, 
     assert rc == 0
     assert calls[0][0] == "migrate"
     assert "--yes" not in calls[0]
+
+
+def test_delete_sources_flow_uses_completed_backup_manifest_and_keeps_backup(
+    tmp_path: Path, monkeypatch
+) -> None:
+    source = tmp_path / "source" / "项目A" / "报告.txt"
+    source.parent.mkdir(parents=True)
+    source.write_text("important payload", encoding="utf-8")
+    backup = create_backup([source], tmp_path / "backup")
+    verify_backup(backup)
+
+    answers = iter([str(backup), "YES"])
+    monkeypatch.setattr("builtins.input", lambda _prompt: next(answers))
+
+    rc = menu._delete_sources_flow()
+    assert rc == 0
+    assert not source.exists()
+    verify_backup(backup)
+    assert (backup.parent / f"{backup.name}.migration.json").is_file()
