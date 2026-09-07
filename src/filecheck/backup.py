@@ -107,8 +107,13 @@ def _ensure_destination_capacity(destination_root: Path, files: Iterable[Path]) 
 def _validate_manifest(manifest: dict) -> list[dict]:
     if manifest.get("schema_version") != 1:
         raise BackupError("不支持的 manifest schema_version")
-    if manifest.get("mode", "directory") != "directory":
-        raise BackupError("v0.1.1 只支持目录备份；请先将旧 ZIP 备份解压为完整目录后再使用")
+    # v0.1.1 never creates or reads ZIP archives itself.  However, a v0.1.0
+    # archive that the user has already extracted is just a normal directory
+    # tree containing manifest.json + files/.  Accept its legacy mode="zip"
+    # marker without changing the on-disk manifest so old backups remain usable.
+    mode = manifest.get("mode", "directory")
+    if mode not in ("directory", "zip"):
+        raise BackupError(f"不支持的 manifest mode: {mode}")
     items = manifest.get("items")
     if not isinstance(items, list) or not items:
         raise BackupError("manifest 中没有有效 items")
@@ -146,7 +151,7 @@ def _validate_manifest(manifest: dict) -> list[dict]:
 def read_backup_manifest(source: str | Path) -> dict:
     source_path = Path(source).expanduser()
     if not source_path.is_dir():
-        raise BackupError(f"v0.1.1 只支持已解压的目录备份: {source_path}")
+        raise BackupError(f"v0.1.1 只支持目录备份；旧 ZIP 请先人工解压: {source_path}")
     manifest_path = source_path / "manifest.json"
     if not manifest_path.is_file():
         raise BackupError(f"未找到 manifest.json: {source_path}")
