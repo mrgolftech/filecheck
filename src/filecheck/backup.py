@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
+import uuid
 import zipfile
-from pathlib import Path
-from typing import Iterable
+from pathlib import Path, PureWindowsPath
+from typing import BinaryIO, Iterable
 
 from .util import backup_relpath, choose_renamed_path, make_batch_id, now_iso, sha256_file, write_json
 
@@ -22,9 +24,8 @@ def _is_within(child: Path, parent: Path) -> bool:
         return False
 
 
-def _collect_files(sources: Iterable[str | Path], destination_root: Path) -> tuple[list[Path], list[Path]]:
+def _collect_files(sources: Iterable[str | Path], destination_root: Path) -> list[Path]:
     files: list[Path] = []
-    selected_dirs: list[Path] = []
     seen: set[str] = set()
 
     for raw in sources:
@@ -33,13 +34,12 @@ def _collect_files(sources: Iterable[str | Path], destination_root: Path) -> tup
             raise BackupError(f"源路径不存在: {source}")
         if source.is_symlink():
             raise BackupError(f"V0.1 不处理符号链接/重解析入口: {source}")
-        if _is_within(destination_root, source):
+        if source.is_dir() and _is_within(destination_root, source):
             raise BackupError(f"备份目标不能位于待备份源目录内部: {source}")
 
         if source.is_file():
             candidates = [source]
         elif source.is_dir():
-            selected_dirs.append(source)
             candidates = [p for p in source.rglob("*") if p.is_file() and not p.is_symlink()]
         else:
             continue
@@ -52,7 +52,170 @@ def _collect_files(sources: Iterable[str | Path], destination_root: Path) -> tup
 
     if not files:
         raise BackupError("没有可备份的普通文件")
-    return files, selected_dirs
+    return files
+
+
+def _stream_sha256(stream: BinaryIO, chunk_size: int = 1024 * 1024) -> str:
+    digest = hashlib.sha256()
+    while True:
+        chunk = stream.read(chunk_size)
+        if not chunk:
+            return digest.hexdigest()
+        digest.update(chunk)
+
+
+def _validate_manifest(manifest: dict) -> list[dict]:
+    if manifest.get("schema_version") != 1:
+        raise BackupError("不支持的 manifest schema_version")
+    items = manifest.get("items")
+    if not isinstance(items, list) or not items:
+        raise BackupError("manifest 中没有有效 items")
+
+    seen_backup: set[str] = set()
+    seen_source: set[str] = set()
+    for item in items:
+        for key in ("source_path", "backup_path", "size", "sha256"):
+            if key not in item:
+                raise BackupError(f"manifest item 缺少字段: {key}")
+
+        backup_path = PureWindowsPath(str(item["backup_path"]).replace("/", "\\"))
+        if backup_path.is_absolute() or ".." in backup_path.parts:
+            raise BackupError(f"非法 backup_path: {item['backup_path']}")
+        if not backup_path.parts or backup_path.parts[0].lower() != "files":
+            raise BackupError(f"backup_path 必须位于 files/ 下: {item['backup_path']}")
+
+        source_text = str(item["source_path"])
+        if not (Path(source_text).is_absolute() or PureWindowsPath(source_text).is_absolute()):
+            raise BackupError(f"source_path 不是绝对路径: {source_text}")
+
+        bkey = str(item["backup_path"]).replace("\\", "/").lower()
+        skey = os.path.normcase(source_text)
+        if bkey in seen_backup:
+            raise BackupError(f"manifest 中 backup_path 重复: {item['backup_path']}")
+        if skey in seen_source:
+            raise BackupError(f"manifest 中 source_path 重复: {source_text}")
+        seen_backup.add(bkey)
+        seen_source.add(skey)
+
+        digest = str(item["sha256"]).lower()
+        if len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
+            raise BackupError(f"非法 SHA-256: {source_text}")
+        if not isinstance(item["size"], int) or item["size"] < 0:
+            raise BackupError(f"非法文件大小: {source_text}")
+
+    return items
+
+
+def _read_manifest_from_dir(source: Path) -> dict:
+    manifest_path = source / "manifest.json"
+    if not manifest_path.is_file():
+        raise BackupError(f"未找到 manifest.json: {source}")
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise BackupError(f"manifest.json 损坏: {source}") from exc
+    _validate_manifest(manifest)
+    return manifest
+
+
+def _read_manifest_from_zip(zf: zipfile.ZipFile) -> dict:
+    try:
+        raw = zf.read("manifest.json")
+    except KeyError as exc:
+        raise BackupError("ZIP 中没有 manifest.json") from exc
+    try:
+        manifest = json.loads(raw.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise BackupError("ZIP 中 manifest.json 损坏") from exc
+    _validate_manifest(manifest)
+    return manifest
+
+
+def verify_backup(source: str | Path) -> dict:
+    """Verify every backed-up payload against its original SHA-256 manifest."""
+    source = Path(source).expanduser()
+    if not source.exists():
+        raise BackupError(f"备份不存在: {source}")
+
+    if source.is_dir():
+        manifest = _read_manifest_from_dir(source)
+        for item in manifest["items"]:
+            stored = source / Path(str(item["backup_path"]).replace("/", os.sep))
+            if not stored.is_file():
+                raise BackupError(f"备份文件缺失: {stored}")
+            if stored.stat().st_size != item["size"]:
+                raise BackupError(f"备份文件大小不一致: {stored}")
+            if sha256_file(stored).lower() != item["sha256"].lower():
+                raise BackupError(f"备份文件 SHA-256 不一致: {stored}")
+        return manifest
+
+    if not zipfile.is_zipfile(source):
+        raise BackupError(f"不是有效 ZIP 备份: {source}")
+    try:
+        with zipfile.ZipFile(source, "r") as zf:
+            bad = zf.testzip()
+            if bad:
+                raise BackupError(f"ZIP CRC 完整性检查失败: {bad}")
+            manifest = _read_manifest_from_zip(zf)
+            names = set(zf.namelist())
+            for item in manifest["items"]:
+                member = str(item["backup_path"]).replace("\\", "/")
+                if member not in names:
+                    raise BackupError(f"ZIP 中缺少备份文件: {member}")
+                info = zf.getinfo(member)
+                if info.file_size != item["size"]:
+                    raise BackupError(f"ZIP 文件大小不一致: {member}")
+                with zf.open(member, "r") as stream:
+                    digest = _stream_sha256(stream)
+                if digest.lower() != item["sha256"].lower():
+                    raise BackupError(f"ZIP 文件 SHA-256 不一致: {member}")
+            return manifest
+    except zipfile.BadZipFile as exc:
+        raise BackupError(f"ZIP 备份损坏或不可读: {source}") from exc
+
+
+def _atomic_copy_to_backup(source: Path, target: Path) -> tuple[str, os.stat_result]:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temp = target.with_name(f".{target.name}.{uuid.uuid4().hex}.part")
+    before = source.stat()
+    before_hash = sha256_file(source)
+    try:
+        shutil.copy2(source, temp)
+        copied_hash = sha256_file(temp)
+        after = source.stat()
+        after_hash = sha256_file(source)
+        if (
+            before.st_size != after.st_size
+            or before.st_mtime_ns != after.st_mtime_ns
+            or before_hash != after_hash
+        ):
+            raise BackupError(f"源文件在备份过程中发生变化，拒绝继续: {source}")
+        if before_hash != copied_hash:
+            raise BackupError(f"备份 SHA-256 校验失败: {source}")
+        os.replace(temp, target)
+        return before_hash, before
+    finally:
+        try:
+            temp.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _create_zip_from_staging(staging: Path, archive: Path) -> None:
+    temp_archive = archive.with_name(f".{archive.stem}.{uuid.uuid4().hex}.tmp.zip")
+    try:
+        with zipfile.ZipFile(temp_archive, "w", compression=zipfile.ZIP_DEFLATED, allowZip64=True) as zf:
+            for path in staging.rglob("*"):
+                if path.is_file():
+                    zf.write(path, path.relative_to(staging).as_posix())
+        verify_backup(temp_archive)
+        os.replace(temp_archive, archive)
+        verify_backup(archive)
+    finally:
+        try:
+            temp_archive.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def create_backup(
@@ -60,16 +223,17 @@ def create_backup(
     destination_root: str | Path,
     *,
     zip_mode: bool = False,
-    remove_source: bool = False,
 ) -> Path:
-    destination_root = Path(destination_root).expanduser()
+    """Create and fully verify a backup. V0.1 never removes source files."""
+    destination_root = Path(destination_root).expanduser().resolve()
     destination_root.mkdir(parents=True, exist_ok=True)
-    files, selected_dirs = _collect_files(sources, destination_root)
+    files = _collect_files(sources, destination_root)
 
     batch_id = make_batch_id()
     staging = destination_root / batch_id
-    if staging.exists():
-        raise BackupError(f"备份批次目录已存在: {staging}")
+    archive = destination_root / f"{batch_id}.zip"
+    if staging.exists() or archive.exists():
+        raise BackupError(f"备份批次已存在: {batch_id}")
     staging.mkdir(parents=True)
 
     manifest = {
@@ -81,22 +245,16 @@ def create_backup(
         "items": [],
     }
 
+    completed = False
     try:
         for source in files:
+            source = source.resolve()
             rel = backup_relpath(source)
             target = staging / rel
-            target.parent.mkdir(parents=True, exist_ok=True)
-
-            source_hash = sha256_file(source)
-            shutil.copy2(source, target)
-            target_hash = sha256_file(target)
-            if source_hash != target_hash:
-                raise BackupError(f"SHA-256 校验失败: {source}")
-
-            stat = source.stat()
+            source_hash, stat = _atomic_copy_to_backup(source, target)
             manifest["items"].append(
                 {
-                    "source_path": str(source.resolve()),
+                    "source_path": str(source),
                     "backup_path": rel.as_posix(),
                     "size": stat.st_size,
                     "mtime_ns": stat.st_mtime_ns,
@@ -107,76 +265,20 @@ def create_backup(
             )
 
         write_json(staging / "manifest.json", manifest)
+        verify_backup(staging)
 
         result: Path = staging
         if zip_mode:
-            archive = destination_root / f"{batch_id}.zip"
-            with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED, allowZip64=True) as zf:
-                for path in staging.rglob("*"):
-                    if path.is_file():
-                        zf.write(path, path.relative_to(staging).as_posix())
-            with zipfile.ZipFile(archive, "r") as zf:
-                bad = zf.testzip()
-                if bad:
-                    raise BackupError(f"ZIP 完整性检查失败: {bad}")
+            _create_zip_from_staging(staging, archive)
             shutil.rmtree(staging)
             result = archive
 
-        if remove_source:
-            # Only remove originals after the whole backup has been verified.
-            for item in manifest["items"]:
-                source = Path(item["source_path"])
-                if source.exists():
-                    if sha256_file(source) != item["sha256"]:
-                        raise BackupError(f"源文件在备份后发生变化，拒绝移除: {source}")
-                    source.unlink()
-                    item["source_removed"] = True
-
-            # Remove only empty directories, deepest first. Never remove non-empty directories.
-            for root in sorted(selected_dirs, key=lambda p: len(p.parts), reverse=True):
-                for directory in sorted(
-                    [p for p in root.rglob("*") if p.is_dir()],
-                    key=lambda p: len(p.parts),
-                    reverse=True,
-                ):
-                    try:
-                        directory.rmdir()
-                    except OSError:
-                        pass
-                try:
-                    root.rmdir()
-                except OSError:
-                    pass
-
-            manifest["source_removed"] = True
-            if zip_mode:
-                # Rebuild the archive so the manifest inside reflects removal state.
-                temp = destination_root / f".{batch_id}.manifest-update"
-                temp.mkdir()
-                try:
-                    with zipfile.ZipFile(result, "r") as zf:
-                        zf.extractall(temp)
-                    write_json(temp / "manifest.json", manifest)
-                    replacement = destination_root / f".{batch_id}.zip.tmp"
-                    with zipfile.ZipFile(replacement, "w", compression=zipfile.ZIP_DEFLATED, allowZip64=True) as zf:
-                        for path in temp.rglob("*"):
-                            if path.is_file():
-                                zf.write(path, path.relative_to(temp).as_posix())
-                    with zipfile.ZipFile(replacement, "r") as zf:
-                        bad = zf.testzip()
-                        if bad:
-                            raise BackupError(f"更新后的 ZIP 完整性检查失败: {bad}")
-                    replacement.replace(result)
-                finally:
-                    shutil.rmtree(temp, ignore_errors=True)
-            else:
-                write_json(result / "manifest.json", manifest)
-
+        verify_backup(result)
+        completed = True
         return result
-    except Exception:
-        if staging.exists():
+    finally:
+        if not completed and staging.exists():
             shutil.rmtree(staging, ignore_errors=True)
-        raise
 
 
 def _resolve_conflict(path: Path, mode: str) -> Path | None:
@@ -191,61 +293,91 @@ def _resolve_conflict(path: Path, mode: str) -> Path | None:
     raise BackupError(f"未知冲突策略: {mode}")
 
 
+def _restore_temp_path(target: Path) -> Path:
+    return target.parent / f".{target.name}.filecheck-restore-{uuid.uuid4().hex}.part"
+
+
+def _finish_atomic_restore(temp: Path, target: Path, item: dict) -> None:
+    if temp.stat().st_size != item["size"] or sha256_file(temp) != item["sha256"]:
+        raise BackupError(f"恢复临时文件校验失败，未替换目标文件: {target}")
+    mtime_ns = item.get("mtime_ns")
+    if isinstance(mtime_ns, int) and mtime_ns >= 0:
+        try:
+            os.utime(temp, ns=(mtime_ns, mtime_ns))
+        except OSError:
+            pass
+    # Atomic replacement on the same filesystem: an existing target is not
+    # touched until the temporary restored copy has passed SHA-256 verification.
+    os.replace(temp, target)
+    if target.stat().st_size != item["size"] or sha256_file(target) != item["sha256"]:
+        raise BackupError(f"恢复后最终 SHA-256 校验失败: {target}")
+
+
 def _restore_one_from_file(source: Path, item: dict, conflict: str) -> tuple[str, str]:
     target = _resolve_conflict(Path(item["source_path"]), conflict)
     if target is None:
         return item["source_path"], "skipped"
     target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(source, target)
-    if sha256_file(target) != item["sha256"]:
-        raise BackupError(f"恢复后 SHA-256 校验失败: {target}")
+    temp = _restore_temp_path(target)
+    try:
+        shutil.copy2(source, temp)
+        _finish_atomic_restore(temp, target, item)
+    finally:
+        try:
+            temp.unlink(missing_ok=True)
+        except OSError:
+            pass
     return str(target), "restored"
+
+
+def _preflight_restore_targets(items: list[dict]) -> None:
+    if os.name != "nt":
+        return
+    anchors: set[str] = set()
+    for item in items:
+        win = PureWindowsPath(item["source_path"])
+        if not win.is_absolute():
+            raise BackupError(f"Windows 恢复路径不是绝对路径: {item['source_path']}")
+        anchors.add(win.anchor)
+    unavailable = [anchor for anchor in anchors if anchor and not Path(anchor).exists()]
+    if unavailable:
+        raise BackupError(f"以下原始驱动器/共享当前不可用，尚未开始恢复: {', '.join(unavailable)}")
 
 
 def restore_backup(source: str | Path, *, conflict: str = "skip") -> list[dict]:
     source = Path(source).expanduser()
-    if not source.exists():
-        raise BackupError(f"备份不存在: {source}")
+    # Safety invariant: verify the entire backup before touching any target.
+    manifest = verify_backup(source)
+    items = manifest["items"]
+    _preflight_restore_targets(items)
 
     results: list[dict] = []
     if source.is_dir():
-        manifest_path = source / "manifest.json"
-        if not manifest_path.is_file():
-            raise BackupError(f"未找到 manifest.json: {source}")
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        for item in manifest.get("items", []):
-            stored = source / Path(item["backup_path"])
-            if not stored.is_file():
-                raise BackupError(f"备份文件缺失: {stored}")
+        for item in items:
+            stored = source / Path(str(item["backup_path"]).replace("/", os.sep))
             target, state = _restore_one_from_file(stored, item, conflict)
             results.append({"target": target, "state": state})
         return results
 
-    if source.suffix.lower() != ".zip":
-        raise BackupError("恢复源必须是批次目录或 .zip 文件")
-
     with zipfile.ZipFile(source, "r") as zf:
-        bad = zf.testzip()
-        if bad:
-            raise BackupError(f"ZIP 完整性检查失败: {bad}")
-        try:
-            manifest = json.loads(zf.read("manifest.json").decode("utf-8"))
-        except KeyError as exc:
-            raise BackupError("ZIP 中没有 manifest.json") from exc
-
-        for item in manifest.get("items", []):
+        for item in items:
             target = _resolve_conflict(Path(item["source_path"]), conflict)
             if target is None:
                 results.append({"target": item["source_path"], "state": "skipped"})
                 continue
             target.parent.mkdir(parents=True, exist_ok=True)
-            member = item["backup_path"].replace("\\", "/")
+            member = str(item["backup_path"]).replace("\\", "/")
+            temp = _restore_temp_path(target)
             try:
-                with zf.open(member, "r") as src, target.open("wb") as dst:
+                with zf.open(member, "r") as src, temp.open("wb") as dst:
                     shutil.copyfileobj(src, dst, length=1024 * 1024)
-            except KeyError as exc:
-                raise BackupError(f"ZIP 中缺少备份文件: {member}") from exc
-            if sha256_file(target) != item["sha256"]:
-                raise BackupError(f"恢复后 SHA-256 校验失败: {target}")
+                    dst.flush()
+                    os.fsync(dst.fileno())
+                _finish_atomic_restore(temp, target, item)
+            finally:
+                try:
+                    temp.unlink(missing_ok=True)
+                except OSError:
+                    pass
             results.append({"target": str(target), "state": "restored"})
     return results
