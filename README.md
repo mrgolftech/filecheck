@@ -1,52 +1,60 @@
 # FileCheck
 
-FileCheck 是一个面向 Windows 终端的离线文件自查、人工复核、备份与原路径恢复工具。
+FileCheck 是一个面向 Windows 终端的离线文件自查、批量备份、可靠迁移和原路径恢复工具。
 
-> **V0.1 安全策略：只读扫描 + 人工复核 + 复制备份 + 全量校验 + 恢复。暂不自动移除源文件。**
+> **当前安全策略：只读扫描 → 批量备份 → 全量 SHA-256 验证 → 源文件再次复核 → 一次批次确认 → 可选移除源文件。**
 >
-> 文件恢复可靠性优先于功能完整度；只有已通过完整验证的备份才可进入后续迁移设计。
+> `backup` 永远不移除源文件；只有显式执行 `migrate` 才会进入源文件移除阶段。程序不提供 Recent、浏览器历史、USBSTOR、注册表 MRU 等“清痕”功能。
 
-## V0.1 已实现
+## 已实现
 
 - 复用 **Everything 1.4 已有索引**，不创建 FileCheck 自有全盘索引，也不默认触发 `-reindex`。
-- 使用 ES CLI（`es.exe`）按关键词 + 扩展名快速搜索文件名；可选匹配完整路径。
-- 扫描指定盘符/目录时使用 ES `-path` 在 Everything 端先限定范围，再进行结果数量限制，避免大索引下漏掉目标目录结果。
-- Everything 返回的候选即使暂时不可访问也保留在扫描结果中，并标记 `accessible=false`，避免静默漏项。
-- 扫描结果按目录分组并编号，程序随后停止，等待人工复核；不会自动备份、移动或删除文件。
-- 支持从扫描结果按编号选择文件，或直接指定文件/目录备份。
+- 使用 ES CLI 1.1.0.37+（`-argv`）按“**一个关键词 + 全部目标扩展名**”查询文件名；可选匹配完整路径。
+- 指定盘符/目录时使用 ES `-path` 在 Everything 端先限定范围，再执行结果数量限制。
+- 扫描结果按完整绝对路径去重；同一文件命中多个关键词时合并命中原因并取最高风险级别。
+- 候选很多时控制台默认只显示前 100 个，完整结果全部写入 `scan-results.json`。
+- `backup --from-scan` **默认批量处理扫描结果中的全部候选**，不要求逐个确认；`--select` 仅作为可选高级过滤。
+- 不把不同来源的同名文件拍平到一个目录，而是映射原始绝对路径，例如 `C:\A\报告.docx -> files/C/A/报告.docx`。
 - 支持目录备份和 ZIP 备份。
-- 每个文件记录：原始绝对路径、大小、修改时间、SHA-256、备份相对路径。
-- 复制时检测源文件是否在备份过程中发生变化。
-- 备份开始前检查目标剩余空间；ZIP 模式按“完整 staging + 临时 ZIP”做保守空间估算。
-- 备份过程先写入隐藏的 `.FC-....incomplete` 暂存批次，只有全量验证通过后才发布为正式 `FC-*` 批次；中断或介质异常不会留下看似成功的正式批次。
-- 文件和 JSON manifest 在发布前执行 `fsync`/平台等价刷盘，再进行原子替换。
-- 备份完成后执行逐文件 **大小 + SHA-256** 全量复核；ZIP 同时执行 CRC 和逐文件 SHA-256，不只依赖 ZIP 自身 CRC。
-- 恢复开始前先验证**整个备份集**，发现任意一项损坏时不开始写入原路径。
-- 恢复先写同目录临时文件并验证 SHA-256，再通过 `os.replace` 原子落盘；`overwrite` 也不会在恢复副本验证前覆盖已有文件。
-- 支持恢复冲突策略：`skip` / `overwrite` / `rename`。
-- 自带 `selftest`，在临时目录执行目录备份、ZIP 备份、删除测试副本、原路径恢复及冲突策略回环测试。
+- 每个备份文件记录原始绝对路径、备份相对路径、大小、mtime、SHA-256。
+- 备份前检查目标剩余空间；ZIP 模式按“完整 staging + 临时 ZIP”进行保守估算。
+- 正式批次发布前使用 `.FC-....incomplete` 暂存，失败时不留下看似成功的正式批次。
+- 文件与 JSON manifest 在发布前刷盘；Windows 使用可写句柄执行 `fsync`，兼容只读源文件复制后的属性。
+- 备份完成后逐文件执行大小 + SHA-256 全量复核；ZIP 同时检查 CRC 与逐文件 SHA-256。
+- 恢复前先验证整个备份集；恢复先写同目录临时文件、校验成功后再 `os.replace` 原子落盘。
+- 恢复冲突策略：`skip` / `overwrite` / `rename`。
+- `migrate` 在删除前重新验证整个备份，并再次 SHA-256 复核全部源文件。
+- 源文件移除只针对 `manifest.items[].source_path`，**不会递归删除整个目录，也不会自动删除空目录**。
+- 若部分文件被占用/无权限，记录 `.migration.json` 状态；关闭占用程序或修正权限后可 `migrate-resume`。
+- `migrate-resume` 每次都会重新验证备份；已移除路径若后来重新出现，不自动删除，防止误删新数据。
+- 自带 `selftest`，覆盖目录/ZIP 的备份、验证、迁移、恢复回环。
 
-## 当前执行流程
+## 主流程
 
 ```text
-Everything 快速扫描
+Everything 1.4 快速扫描
         ↓
-显示候选文件并按目录分组
+scan-results.json
         ↓
-保存 scan-results.json
+全部候选批量备份（默认）
         ↓
-程序停止，人工复核
+逐文件 SHA-256 + 整批 verify
         ↓
-选择候选文件，或人工决定备份整个目录
+┌───────────────────────────────┐
+│ backup：到此结束，源文件不动 │
+└───────────────────────────────┘
+        或
         ↓
-创建目录/ZIP备份
-        ↓
-全量 SHA-256 验证
-        ↓
-得到可独立 verify / restore 的正式备份批次
+┌──────────────────────────────────────────────┐
+│ migrate：全部源文件再次 SHA-256 复核        │
+│          ↓                                   │
+│          一次批次级 YES 确认                 │
+│          ↓                                   │
+│          仅移除 manifest 中列出的源文件       │
+│          ↓                                   │
+│          保存 migration state，可断点继续     │
+└──────────────────────────────────────────────┘
 ```
-
-`scan` 本身只负责发现和记录候选，不会自动把命中的文件搬走。若同一目录中存在多个相关文件，是否备份整个目录由人工判断；V0.1 不会因为一个关键词命中就自动扩大备份范围。
 
 ## 安装开发版
 
@@ -56,71 +64,176 @@ py -m venv .venv
 python -m pip install -e ".[dev]"
 ```
 
-ES CLI 可放在以下任一位置：
+ES CLI 可放在：
 
 1. `tools/es.exe`
 2. 系统 `PATH`
 3. 环境变量 `FILECHECK_ES`
 4. Everything 常见安装目录
 
-Everything 本体需要已启动并加载索引。
+Everything 本体需要已启动并完成索引。V0.1 要求 Everything 1.4.x 和 ES CLI 1.1.0.37+。
 
 ## 使用
 
-先检查 Everything 环境：
+### 1. 环境检查
 
 ```powershell
 filecheck doctor
 ```
 
-快速扫描：
+### 2. 快速扫描
 
 ```powershell
 filecheck scan --path D:\ --output scan-results.json
 ```
 
-如果关键词也需要匹配目录路径：
+关键词也匹配完整目录路径：
 
 ```powershell
 filecheck scan --path D:\ --match-path --output scan-results.json
 ```
 
-扫描完成后人工复核编号，再选择候选项进行目录备份：
+大量结果时只显示汇总：
+
+```powershell
+filecheck scan --path D:\ --list-limit 0 --output scan-results.json
+```
+
+当前规则在 `config/rules.json`。每个关键词会构造成类似：
+
+```text
+"机密" ext:doc;docx;xls;xlsx;ppt;pptx;pdf;txt;wps;zip;rar;7z;dwg
+```
+
+### 3. 批量备份扫描结果中的全部候选
+
+```powershell
+filecheck backup --from-scan scan-results.json --dest X:\FileCheckBackup
+```
+
+ZIP：
+
+```powershell
+filecheck backup --from-scan scan-results.json --dest X:\FileCheckBackup --zip
+```
+
+如果确实只想处理部分候选，仍可使用：
 
 ```powershell
 filecheck backup --from-scan scan-results.json --select 1,3-5 --dest X:\FileCheckBackup
 ```
 
-如果人工判断整个目录都需要保留上下文，可以直接指定目录：
+也可以直接备份指定文件/目录：
 
 ```powershell
 filecheck backup D:\Work\ProjectA --dest X:\FileCheckBackup
 ```
 
-ZIP 备份：
+### 4. 批量迁移：备份验证后移除源文件
 
 ```powershell
-filecheck backup --from-scan scan-results.json --select 1,3-5 --dest X:\FileCheckBackup --zip
+filecheck migrate --from-scan scan-results.json --dest X:\FileCheckBackup
 ```
 
-再次独立验证备份：
+程序依次执行：
+
+```text
+创建备份
+→ 全量 verify
+→ 全部源文件再次 size + SHA-256 复核
+→ 显示批次汇总
+→ 要求输入 YES 一次确认
+→ 逐文件再次即时复核后 unlink
+→ 保存迁移状态
+```
+
+明确的无人值守场景可使用：
+
+```powershell
+filecheck migrate --from-scan scan-results.json --dest X:\FileCheckBackup --yes
+```
+
+ZIP 迁移：
+
+```powershell
+filecheck migrate --from-scan scan-results.json --dest X:\FileCheckBackup --zip
+```
+
+如果有文件因占用或权限问题未能移除：
+
+```powershell
+filecheck migrate-resume "X:\FileCheckBackup\FC-xxxx.migration.json"
+```
+
+ZIP 的状态文件名类似：
+
+```text
+FC-xxxx.zip.migration.json
+```
+
+### 5. 独立验证备份
 
 ```powershell
 filecheck verify X:\FileCheckBackup\FC-xxxx
 filecheck verify X:\FileCheckBackup\FC-xxxx.zip
 ```
 
-恢复：
+### 6. 原路径恢复
 
 ```powershell
 filecheck restore X:\FileCheckBackup\FC-xxxx --conflict skip
 ```
 
-本机备份/恢复回环自检：
+需要覆盖已有文件时：
+
+```powershell
+filecheck restore X:\FileCheckBackup\FC-xxxx --conflict overwrite
+```
+
+`overwrite` 也会先写临时文件并完成 SHA-256 校验，最后才替换现有目标。
+
+### 7. 自检
 
 ```powershell
 filecheck selftest
 ```
+
+## 运行产物
+
+### `scan-results.json`
+
+扫描候选清单。主要包含：
+
+- 扫描时间、Everything 版本、扫描范围；
+- `rules.file`：规则文件名；
+- `rules.sha256`：本次规则文件 SHA-256，不保存规则文件绝对路径；
+- 每个候选的完整路径、目录、命中关键词、风险级别、大小、mtime、可访问状态。
+
+扫描阶段不对全部候选计算内容 SHA-256，以保持 Everything 快速扫描优势。
+
+### `manifest.json`
+
+备份/恢复的权威清单。每个文件包含：
+
+- `source_path`
+- `backup_path`
+- `size`
+- `mtime_ns`
+- `sha256`
+
+同名文件依靠 `source_path -> backup_path` 路径映射区分。
+
+### `*.migration.json`
+
+迁移源文件移除状态，记录：
+
+- 对应 backup/batch；
+- 每个源文件的 size/SHA-256；
+- `pending / deleted / already_absent / failed / reappeared` 状态；
+- 失败原因；
+- 汇总计数。
+
+migration state 与备份 manifest 分离，不修改已经验证发布的备份内容。
 
 ## 自动化测试
 
@@ -128,16 +241,25 @@ filecheck selftest
 python -m pytest -q
 ```
 
-CI 在 Windows / Ubuntu、Python 3.10 / 3.12 上同时运行单元测试和 `filecheck selftest`。真实 Everything 1.4 的 IPC/索引联调仍必须在装有 Everything 的 Windows 机器进行，详见 `docs/TEST_PLAN.md`。
+CI 矩阵：
 
-## 关键安全边界
+- Windows latest + Python 3.10
+- Windows latest + Python 3.12
+- Ubuntu latest + Python 3.10
+- Ubuntu latest + Python 3.12
 
-- V0.1 **不会自动删除或移动原文件**。
-- 不清理 Recent、浏览器历史、USBSTOR、注册表等记录。
-- 不根据关键词自动认定文件性质；所有候选必须人工复核。
-- 被占用或无权限文件直接报错，用户关闭相关应用或修正权限后重试；程序不杀进程、不强制解锁。
-- 扫描结果、真实文件名、路径、主机名、manifest 和备份包属于运行数据，不得提交到 Git 仓库。
-- V0.1 以“普通文件内容完整恢复”为可靠性目标；NTFS ACL、EFS、备用数据流（ADS）、硬链接等文件系统高级元数据暂不作为恢复承诺范围。
+每个平台同时执行单元/故障注入/压力测试和 `filecheck selftest`。真实 Everything IPC 仍需在安装 Everything 的 Windows 目标机验收。
+
+## 安全边界与已知限制
+
+- 关键词命中仅代表候选，不自动认定文件性质。
+- `scan` 和 `backup` 都不会删除源文件；只有显式 `migrate` 会进入源文件移除流程。
+- 不杀进程、不强制解锁；占用文件留在原位置并写入迁移状态，关闭应用后重试。
+- 不清理 Recent、浏览器历史、USBSTOR、Office/WPS MRU、注册表等记录。
+- 扫描结果、真实文件名/路径、manifest、migration state、备份包均可能包含敏感运行信息，不应提交 Git 或随意外发。
+- ZIP 是压缩格式，不是加密格式。
+- 当前可靠性承诺是普通文件内容、原始绝对路径、大小、基本 mtime 和 SHA-256；NTFS ACL、EFS、ADS、硬链接、稀疏文件、重解析点等高级文件系统语义暂不作为恢复承诺。
+- 空目录不会单独备份或恢复；迁移也不会自动删除空目录。
 
 ## 文档
 
