@@ -34,6 +34,9 @@ def test_search_keyword_builds_query_and_filters_path(tmp_path: Path, monkeypatc
     args = captured["args"]
     assert isinstance(args, list)
     assert "-p" in args
+    assert "-path" in args
+    assert "/a-d" in args
+    assert "-full-path" in args
     assert '"机密" ext:txt;docx' in args
 
 
@@ -48,11 +51,7 @@ def test_scan_keywords_deduplicates_and_uses_highest_severity(
         "get_status",
         lambda es=None: everything.EverythingStatus("es.exe", "1.1.0.37", "1.4.1.1032"),
     )
-    monkeypatch.setattr(
-        everything,
-        "search_keyword",
-        lambda *args, **kwargs: [file],
-    )
+    monkeypatch.setattr(everything, "search_keyword", lambda *args, **kwargs: [file])
 
     items = everything.scan_keywords(
         {"high": ["机密"], "sensitive": ["密码"]},
@@ -61,6 +60,7 @@ def test_scan_keywords_deduplicates_and_uses_highest_severity(
     assert len(items) == 1
     assert set(items[0]["matched_keywords"]) == {"机密", "密码"}
     assert items[0]["severity"] == "high"
+    assert items[0]["accessible"] is True
 
 
 def test_get_status_rejects_non_14(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -81,3 +81,12 @@ def test_get_status_rejects_non_14(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
 def test_keyword_with_quote_is_rejected() -> None:
     with pytest.raises(ValueError):
         everything._safe_keyword('bad"query')
+
+
+def test_indexed_but_inaccessible_result_is_retained(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    missing = tmp_path / "indexed-but-currently-unavailable.txt"
+    monkeypatch.setattr(everything, "_run", lambda *args, **kwargs: str(missing))
+    result = everything.search_keyword(Path("es.exe"), "unavailable", ["txt"])
+    assert result == [missing]
