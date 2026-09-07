@@ -1,0 +1,48 @@
+name: Fix v0.1.1 path literals once
+
+on:
+  push:
+    branches:
+      - feat/v0.1.1-cli-workflow
+    paths:
+      - .github/workflows/v011-fix-syntax-once.yml
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fix trailing-backslash Python literals
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('src/filecheck/cli.py')
+          text = path.read_text(encoding='utf-8')
+          old = 'help=r"要索引的盘符/目录；可重复，例如 --drive C:\\\\ --drive D:\\\\")'
+          new = 'help="要索引的盘符/目录；可重复，例如 --drive C:\\\\\\\\ --drive D:\\\\\\\\")'
+          if old not in text:
+              raise SystemExit('cli path literal target not found')
+          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+          path = Path('src/filecheck/menu.py')
+          text = path.read_text(encoding='utf-8')
+          old = '_ask(r"请输入索引范围，多个用逗号分隔，例如 C:\\\\,D:\\\\")'
+          new = '_ask("请输入索引范围，多个用逗号分隔，例如 C:\\\\\\\\,D:\\\\\\\\")'
+          if old not in text:
+              raise SystemExit('menu path literal target not found')
+          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
+      - name: Commit
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/filecheck/cli.py src/filecheck/menu.py
+          git diff --cached --check
+          git commit -m "fix: escape Windows path examples"
+          git push origin HEAD:feat/v0.1.1-cli-workflow
