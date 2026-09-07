@@ -7,7 +7,7 @@ FileCheck v0.1.0 提供两个 Windows x64 发布包，请按系统版本选择�
 
 两个发布包都包含 `tools\es.exe`（Everything Command-line Interface 1.1.0.37 x64）。Everything 1.4.x 本体仍需要安装、启动并完成索引。
 
-> Windows 7 兼容包已经通过 Python 3.8 源码编译、自动化回归、PyInstaller 构建和 EXE 自检，但 GitHub Actions 运行环境本身不是 Windows 7，因此仍需在真实 Windows 7 SP1 x64 机器上做最终实机验收。
+> Windows 7 兼容包已经通过 Python 3.8 源码编译、自动化回归、PyInstaller 构建和 EXE 自检，并于 2026-09-07 在真实 Windows 7 64 位电脑上完成启动与实际使用验收，用户反馈运行正常。
 
 ## 主要能力
 
@@ -40,6 +40,12 @@ FileCheck v0.1.0 提供两个 Windows x64 发布包，请按系统版本选择�
 6. 确认备份无误后，主菜单 7 删除已验证备份对应的源文件。
 7. 删除完成后在 Everything 中强制重建索引，再次检查。
 8. 妥善保存整个备份批次目录；后续恢复时使用主菜单 6。
+
+## 验收状态
+
+- Windows 10/11 x64：自动化 CI、EXE selftest 和既有 Windows 实机流程已通过。
+- Windows 7 SP1 x64：兼容构建自动化回归通过；2026-09-07 已在真实 Win7 64 位环境完成启动和实际使用验收。
+- 后续若升级 Win7 构建所用 Python/PyInstaller，或修改 Windows 路径/文件 I/O 关键实现，应重新执行 Win7 实机兼容回归。
 
 ## 第三方组件
 
