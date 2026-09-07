@@ -54,15 +54,15 @@ python -m pytest -q
 filecheck selftest
 ```
 
-当前回归基线：
+当前回归基线以 GitHub Actions 的实际运行结果为准，不在文档中固定自动化测试数量，避免新增测试后数字失真。主干门禁要求：
 
 ```text
-48 automated tests PASS
 Windows 3.10       PASS
 Windows 3.12       PASS
 Ubuntu 3.10        PASS
 Ubuntu 3.12        PASS
 selftest × 4       PASS
+Win7 x64 兼容构建   PASS
 ```
 
 Windows 和 Ubuntu 都运行同一套单元、故障注入、批量迁移压力及 CLI 端到端回归；Windows runner 已覆盖修正后的 writable-handle `fsync` 行为。
