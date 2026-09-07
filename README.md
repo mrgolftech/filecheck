@@ -28,6 +28,8 @@ FileCheck 是一个面向 Windows 终端的离线文件自查、批量备份、�
 - 若部分文件被占用/无权限，记录 `.migration.json` 状态；关闭占用程序或修正权限后可 `migrate-resume`。
 - `migrate-resume` 每次都会重新验证备份；已移除路径若后来重新出现，不自动删除，防止误删新数据。
 - 自带 `selftest`，覆盖目录/ZIP 的备份、验证、迁移、恢复回环。
+- 新增**交互式命令行菜单**：直接执行 `filecheck` 即可进入，不要求记忆各个子命令。
+- 菜单扫描完成后会显示候选总量、候选数据总大小、目录备份建议空间、ZIP 创建过程保守峰值空间，并在选择目标目录后显示该目标当前剩余空间。
 
 ## 主流程
 
@@ -73,7 +75,75 @@ ES CLI 可放在：
 
 Everything 本体需要已启动并完成索引。V0.1 要求 Everything 1.4.x 和 ES CLI 1.1.0.37+。
 
-## 使用
+## 推荐使用：交互式菜单
+
+安装/更新后直接执行：
+
+```powershell
+filecheck
+```
+
+不带子命令时进入：
+
+```text
+FileCheck V0.1 · 文件扫描 / 批量备份 / 迁移 / 恢复
+
+1. 检查 Everything / ES 环境
+2. 扫描并处理（推荐入口）
+3. 使用已有扫描结果批量备份
+4. 使用已有扫描结果迁移（会进入源文件移除确认）
+5. 验证已有备份
+6. 从备份恢复到原路径
+7. 继续未完成的迁移
+8. 运行本机自检
+9. 显示高级命令帮助
+0. 退出
+```
+
+扫描范围菜单：
+
+```text
+1. Everything 当前已索引的全部范围
+2. 指定盘符或目录（推荐）
+```
+
+指定范围可直接输入：
+
+```text
+C:\
+D:\Work
+C:\Users\Public\Documents
+```
+
+扫描完成后菜单会显示：
+
+```text
+候选文件
+候选数据总量
+目录备份建议至少可用空间
+ZIP 备份过程建议至少可用空间
+```
+
+并提供批量动作：
+
+```text
+1. 目录方式批量备份全部候选（推荐，源文件不动）
+2. ZIP 方式批量备份全部候选（源文件不动）
+3. 目录方式迁移：备份验证后移除候选源文件
+4. ZIP 方式迁移：备份验证后移除候选源文件
+5. 只保存扫描结果，暂不处理
+0. 返回
+```
+
+菜单模式下的扫描结果默认写入 FileCheck 本机运行数据目录，Windows 下类似：
+
+```text
+%LOCALAPPDATA%\FileCheck\scan-results-20260907-140000.json
+```
+
+详细说明见 `docs/CLI_MENU.md`。
+
+## 高级命令行使用
 
 ### 1. 环境检查
 
@@ -83,8 +153,22 @@ filecheck doctor
 
 ### 2. 快速扫描
 
+指定盘符：
+
 ```powershell
 filecheck scan --path D:\ --output scan-results.json
+```
+
+指定目录：
+
+```powershell
+filecheck scan --path D:\Work\ProjectA --output scan-results.json
+```
+
+不指定 `--path` 时，查询 Everything 当前已索引的全部范围：
+
+```powershell
+filecheck scan --output scan-results.json
 ```
 
 关键词也匹配完整目录路径：
@@ -248,7 +332,7 @@ CI 矩阵：
 - Ubuntu latest + Python 3.10
 - Ubuntu latest + Python 3.12
 
-当前基线：**48 项自动化测试在四个矩阵环境全部通过，且四个平台 `filecheck selftest` 全部通过。** 自动化覆盖批量扫描结果消费、目录/ZIP 备份恢复、显式迁移、250 文件批量迁移压力、文件变化、损坏备份、占用/权限模拟、断点续跑、已删除路径重新出现保护和 Windows 只读文件刷盘。
+当前菜单代码基线：**55 项自动化测试在四个矩阵环境全部通过，且四个平台 `filecheck selftest` 全部通过。** 自动化覆盖批量扫描结果消费、目录/ZIP 备份恢复、显式迁移、250 文件批量迁移压力、文件变化、损坏备份、占用/权限模拟、断点续跑、已删除路径重新出现保护、Windows 只读文件刷盘，以及交互式菜单、扫描范围传递和容量估算。
 
 真实 Everything IPC 仍需在安装 Everything 的 Windows 目标机验收；当前 Everything 1.4.1.877 / ES 1.1.0.37 的实机扫描，以及目录/ZIP 备份恢复均已完成受控测试。显式 `migrate` 的源文件移除流程仍应先在专用可丢弃 Windows 测试目录做最终验收。
 
@@ -268,3 +352,4 @@ CI 矩阵：
 - `docs/REQUIREMENTS.md`
 - `docs/ARCHITECTURE.md`
 - `docs/TEST_PLAN.md`
+- `docs/CLI_MENU.md`
