@@ -1,139 +1,199 @@
-# FileCheck 交互式命令行菜单
+# FileCheck v0.1.1 交互式命令行菜单
 
 ## 1. 启动
 
-重新安装当前开发版后，直接执行：
+源码开发环境：
 
 ```powershell
 filecheck
 ```
 
-不带任何子命令时进入交互式菜单。原有高级命令仍然保留，例如：
+正式包：
 
 ```powershell
-filecheck scan --path D:\ --output scan-results.json
-filecheck backup --from-scan scan-results.json --dest X:\FileCheckBackup
-filecheck migrate --from-scan scan-results.json --dest X:\FileCheckBackup
+.\FileCheck.exe
 ```
 
-也可以显式执行：
-
-```powershell
-filecheck menu
-```
+无参数时进入交互式菜单；带子命令时进入高级 CLI。
 
 ## 2. 主菜单
 
 ```text
-FileCheck V0.1 · 文件扫描 / 批量备份 / 迁移 / 恢复
+FileCheck v0.1.1 · 便携索引 → 扫描 → 目录备份 → 验证 → 删除 → 恢复
 
-1. 检查 Everything / ES 环境
-2. 扫描并处理（推荐入口）
-3. 使用已有扫描结果批量备份
-4. 使用已有扫描结果迁移（会进入源文件移除确认）
-5. 验证已有备份
-6. 从备份恢复到原路径
-7. 继续未完成的迁移
-8. 运行本机自检
-9. 显示高级命令帮助
+1. 环境与索引（选择磁盘、设置备份目录、建立索引）
+2. 扫描文件（结果保存到程序目录 scan-results）
+3. 核对扫描结果（JSON / CSV）
+4. 创建目录备份（全部候选，保持原目录结构）
+5. 检查并再次验证备份
+6. 删除源文件 / 继续未完成删除
+7. 恢复备份文件到各自原路径
+8. 继续未完成的备份复制任务
+9. 运行本机自检
+10. 高级命令帮助
 0. 退出
 ```
 
-## 3. 扫描范围
+菜单强调生命周期顺序，而不是把“备份”和“删除”混成一个默认动作。
 
-菜单中的扫描支持两种范围：
+## 3. 环境与索引
 
-```text
-1. Everything 当前已索引的全部范围
-2. 指定盘符或目录（推荐）
-```
+首次使用选择需要纳入检查的磁盘/目录，并指定统一备份根目录。
 
-指定范围示例：
+FileCheck 使用随包提供的 portable Everything，启动专用实例 `FileCheck`，运行数据保存到：
 
 ```text
-C:\
-D:\Work
-C:\Users\Public\Documents
+runtime\everything\Everything.ini
+runtime\everything\Everything.db
+runtime\everything\index-config.json
 ```
 
-命令行等价写法：
+自动排除：
+
+```text
+FileCheck 程序目录
+统一备份根目录
+```
+
+因此备份副本不会在后续扫描中再次成为候选。
+
+## 4. 扫描
+
+菜单默认扫描当前 FileCheck 专用索引的全部配置范围。
+
+用户只需要决定：
+
+```text
+关键词是否同时匹配目录路径（默认 N）
+```
+
+默认只匹配文件名，避免父目录关键词导致候选范围意外扩大。
+
+高级 CLI 仍允许：
 
 ```powershell
 filecheck scan --path D:\Work
 ```
 
-不指定 `--path` 时，FileCheck 查询 Everything 当前已有索引范围。指定 `--path` 时，FileCheck 通过 ES `-path` 在 Everything 端先限制搜索范围，再进行关键词查询。
+其中 `--path` 只是在已经建立的专用索引中进一步限定子目录。
 
-`--match-path`/菜单中的“关键词同时匹配目录路径”只控制关键词是否也检查完整路径，不改变扫描范围。
+## 5. 扫描结果
 
-## 4. 扫描后的容量提示
-
-菜单读取 `scan-results.json` 中每个可访问候选的文件大小并给出：
+默认输出：
 
 ```text
-候选文件
-可统计大小的文件数
+scan-results\scan-results-YYYYMMDD-HHMMSS.json
+scan-results\scan-results-YYYYMMDD-HHMMSS.csv
+```
+
+JSON 供 FileCheck 后续处理；CSV 供人工核对。
+
+扫描完成后不会立刻进入删除，也不要求逐文件选择。
+
+## 6. 容量提示
+
+菜单按当前扫描结果估算：
+
+```text
+候选文件数
+当前可统计大小的文件数
 候选数据总量
 目录备份建议至少可用空间
-ZIP 备份过程建议至少可用空间
 ```
 
-当前空间估算与备份实现保持一致：
+V0.1.1 只有目录备份，因此不再显示 ZIP 空间估算。
+
+估算公式：
 
 ```text
-目录备份：候选总字节数 + 安全余量
-ZIP：2 × 候选总字节数 + 安全余量
+候选总字节数 + 安全余量
 ```
 
-安全余量最少 16 MiB、最多 512 MiB，中间按候选数据量约 5% 计算。
+安全余量最少 16 MiB、最多 512 MiB，中间按候选数据量约 5% 计算。实际开始备份时后端仍会再次执行空间门禁。
 
-ZIP 的 `2×` 是创建过程的保守峰值估算，因为当前实现会同时保留已经验证的 staging 副本和临时 ZIP。最终 ZIP 文件大小由压缩率决定，不等于该峰值估算。
+## 7. 创建目录备份
 
-若扫描结果中存在当前不可访问的文件，其大小无法统计，菜单会明确提示空间值只是下限；实际开始备份时仍会重新检查文件和目标剩余空间。
-
-用户输入备份目标目录后，菜单还会尝试显示该目标所在磁盘的当前剩余空间，并与当前备份模式的建议空间进行比较。真正的 `create_backup()` 仍执行严格的空间门禁，菜单提示不是替代校验。
-
-## 5. 扫描后的默认处理
-
-扫描结束后不要求逐个确认候选文件，而是针对完整扫描结果选择批量动作：
+菜单 4 默认把当前选择的 `scan-results.json` 中**全部候选**交给备份流程：
 
 ```text
-1. 目录方式批量备份全部候选（推荐，源文件不动）
-2. ZIP 方式批量备份全部候选（源文件不动）
-3. 目录方式迁移：备份验证后移除候选源文件
-4. ZIP 方式迁移：备份验证后移除候选源文件
-5. 只保存扫描结果，暂不处理
-0. 返回
+扫描 JSON
+→ 全部候选
+→ 保持源盘符/目录/文件名复制
+→ 每文件 SHA-256
+→ 整批全量 verify
+→ 成功后发布 FC-* 正式目录
 ```
 
-`backup` 永远不会移除源文件。
+不要求逐文件确认，也不提供 ZIP 选项。
 
-`migrate` 仍保持破坏性操作门禁：
+## 8. 再次验证
+
+菜单 5 用于人工检查备份目录后再次执行完整 `verify`。
+
+这是源文件删除前推荐的独立人工门禁。
+
+## 9. 删除源文件 / 继续删除
+
+菜单 6 的逻辑：
 
 ```text
-批量备份
-→ 整批 verify
-→ 全部源文件再次 SHA-256 复核
-→ 一次 YES 批次确认
-→ 逐文件即时复核
-→ 只移除 manifest 中记录的源文件
-→ 保存 migration state
+选择正式备份批次
+→ 若无 source-removal.json：
+     完整验证备份
+     → 全部源文件重新 size + SHA-256
+     → YES
+     → 逐文件即时复核并删除
+→ 若已有未完成 source-removal.json：
+     再次验证备份
+     → 只重试 pending/failed
 ```
 
-菜单不会自动传递 `--yes`，因此不会绕过最后一次源文件移除确认。
-
-## 6. 扫描结果存放
-
-菜单模式下，扫描结果默认写到 FileCheck 本机运行数据目录，并使用带时间戳的文件名，例如 Windows：
+删除状态保存在：
 
 ```text
-%LOCALAPPDATA%\FileCheck\scan-results-20260907-140000.json
+<备份批次>\source-removal.json
 ```
 
-这样避免把包含真实文件路径的扫描结果默认写入代码仓库工作目录。
+有失败项时还会生成：
 
-命令行高级模式仍可以通过 `--output` 自行指定位置。
+```text
+<备份批次>\not-deleted.txt
+```
 
-## 7. 备份目标建议
+删除失败不会终止整个批次；文件占用、权限等问题关闭/修复后可继续。
 
-建议把备份目标放在扫描范围之外，最好是另一块磁盘或专用备份目录。如果备份目标位于本次扫描范围内部，菜单会提示：后续再次扫描时可能把备份副本也检索出来。
+## 10. 恢复
+
+菜单 7 只接受目录备份。恢复前先验证整个备份。
+
+冲突策略：
+
+```text
+1 = skip       默认/推荐
+2 = rename
+3 = overwrite
+```
+
+V0.1.0 旧 ZIP 必须先人工完整解压，再把解压目录交给 FileCheck。
+
+## 11. 未完成备份
+
+大批量复制如果被中断或遇到暂时不可访问文件，可通过菜单 8 读取操作状态继续。
+
+已经复制且重新校验仍有效的暂存文件不会重复复制。
+
+## 12. 高级 CLI
+
+```powershell
+filecheck doctor
+filecheck index --drive C:\ --drive D:\ --backup-root H:\FileCheckBackup
+filecheck scan
+filecheck backup --from-scan scan-results.json --dest H:\FileCheckBackup
+filecheck verify H:\FileCheckBackup\FC-...
+filecheck remove-sources H:\FileCheckBackup\FC-...
+filecheck remove-resume H:\FileCheckBackup\FC-...
+filecheck restore H:\FileCheckBackup\FC-... --conflict skip
+filecheck selftest
+```
+
+`migrate` / `migrate-resume` 仅作为兼容高级别名保留，不属于推荐菜单主流程。
