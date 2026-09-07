@@ -3,13 +3,14 @@ from __future__ import annotations
 import ctypes
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
+from typing import Callable, Iterable
 
 from .everything import FILECHECK_INSTANCE, EverythingError, EverythingStatus, get_status, reindex
 from .util import now_iso, program_dir, runtime_dir, write_json
@@ -23,6 +24,7 @@ class PortableEverythingError(EverythingError):
 class DriveInfo:
     root: str
     kind: str
+    filesystem: str = "unknown"
 
 
 @dataclass(frozen=True)
@@ -32,6 +34,8 @@ class PortableIndexResult:
     database_path: Path
     selected_roots: tuple[str, ...]
     excluded_roots: tuple[str, ...]
+    ntfs_roots: tuple[str, ...] = ()
+    folder_roots: tuple[str, ...] = ()
 
 
 def portable_root() -> Path:
@@ -76,6 +80,25 @@ def find_everything_exe(explicit: str | None = None) -> Path:
     )
 
 
+def _filesystem_for_root(root: str) -> str:
+    if os.name != "nt":
+        return "unknown"
+    fs_name = ctypes.create_unicode_buffer(64)
+    ok = ctypes.windll.kernel32.GetVolumeInformationW(
+        ctypes.c_wchar_p(root),
+        None,
+        0,
+        None,
+        None,
+        None,
+        fs_name,
+        len(fs_name),
+    )
+    if not ok:
+        return "unknown"
+    return fs_name.value or "unknown"
+
+
 def list_windows_drives() -> list[DriveInfo]:
     """Return fixed/removable Windows drive roots in drive-letter order."""
     if os.name != "nt":
@@ -89,7 +112,13 @@ def list_windows_drives() -> list[DriveInfo]:
         root = f"{chr(ord('A') + index)}:\\"
         dtype = int(ctypes.windll.kernel32.GetDriveTypeW(ctypes.c_wchar_p(root)))
         if dtype in drive_types:
-            result.append(DriveInfo(root=root, kind=drive_types[dtype]))
+            result.append(
+                DriveInfo(
+                    root=root,
+                    kind=drive_types[dtype],
+                    filesystem=_filesystem_for_root(root),
+                )
+            )
     return result
 
 
@@ -119,26 +148,91 @@ def _ini_list(values: Iterable[str]) -> str:
     return ",".join(parts)
 
 
-def _write_ini(selected_roots: list[str], excluded_roots: list[str]) -> Path:
+def _ini_quoted_list(values: Iterable[str]) -> str:
+    parts: list[str] = []
+    for value in values:
+        escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+        parts.append(f'"{escaped}"')
+    return ",".join(parts)
+
+
+def _drive_root(text: str) -> str | None:
+    match = re.fullmatch(r"([A-Za-z]):[\\/]?", text.strip())
+    if not match:
+        return None
+    return f"{match.group(1).upper()}:\\"
+
+
+def _is_admin() -> bool:
+    if os.name != "nt":
+        return False
+    try:
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        return False
+
+
+def _split_index_roots(selected_roots: list[str]) -> tuple[list[str], list[str], dict[str, str]]:
+    ntfs: list[str] = []
+    folders: list[str] = []
+    filesystems: dict[str, str] = {}
+    drive_map = {os.path.normcase(info.root): info for info in list_windows_drives()}
+
+    for root in selected_roots:
+        drive = _drive_root(root)
+        if drive is None:
+            folders.append(root)
+            filesystems[root] = "folder"
+            continue
+        info = drive_map.get(os.path.normcase(drive))
+        filesystem = info.filesystem if info else _filesystem_for_root(drive)
+        filesystems[drive] = filesystem
+        if filesystem.upper() == "NTFS":
+            ntfs.append(drive)
+        else:
+            folders.append(drive)
+    return ntfs, folders, filesystems
+
+
+def _write_ini(
+    selected_roots: list[str],
+    excluded_roots: list[str],
+    *,
+    ntfs_roots: list[str],
+    folder_roots: list[str],
+) -> Path:
     root = portable_root()
     root.mkdir(parents=True, exist_ok=True)
     ini = everything_ini_path()
-    monitor = ",".join("0" for _ in selected_roots)
-    buffers = ",".join("65536" for _ in selected_roots)
-    rescan = ",".join("0" for _ in selected_roots)
-    update_types = ",".join("0" for _ in selected_roots)
+
+    ntfs_paths = [drive.rstrip("\\/") for drive in ntfs_roots]
+    ntfs_count = len(ntfs_paths)
+    folder_count = len(folder_roots)
+    monitor = ",".join("1" for _ in folder_roots)
+    buffers = ",".join("65536" for _ in folder_roots)
+    rescan = ",".join("0" for _ in folder_roots)
+    update_types = ",".join("0" for _ in folder_roots)
+
     lines = [
         "[Everything]",
         "app_data=0",
         "run_as_admin=0",
         "auto_include_fixed_volumes=0",
         "auto_include_removable_volumes=0",
-        "auto_remove_offline_ntfs_volumes=1",
+        "auto_remove_offline_ntfs_volumes=0",
+        "auto_remove_moved_ntfs_volumes=0",
         "exclude_list_enabled=1",
         "exclude_hidden_files_and_folders=1",
         "exclude_system_files_and_folders=1",
         f"exclude_folders={_ini_list(excluded_roots)}",
-        f"folders={_ini_list(selected_roots)}",
+        f"ntfs_volume_guids={_ini_quoted_list([''] * ntfs_count)}",
+        f"ntfs_volume_paths={_ini_quoted_list(ntfs_paths)}",
+        f"ntfs_volume_roots={_ini_quoted_list([''] * ntfs_count)}",
+        f"ntfs_volume_includes={','.join('1' for _ in ntfs_paths)}",
+        f"ntfs_volume_load_recent_changes={','.join('1' for _ in ntfs_paths)}",
+        f"ntfs_volume_include_onlys={_ini_quoted_list([''] * ntfs_count)}",
+        f"ntfs_volume_monitors={','.join('1' for _ in ntfs_paths)}",
+        f"folders={_ini_list(folder_roots)}",
         f"folder_monitor_changes={monitor}",
         f"folder_buffer_size_list={buffers}",
         f"folder_rescan_if_full_list={rescan}",
@@ -224,6 +318,7 @@ def configure_and_reindex(
     *,
     everything: str | None = None,
     es: str | None = None,
+    progress: Callable[[float], None] | None = None,
 ) -> PortableIndexResult:
     selected = _normalize_roots(selected_roots)
     if not selected:
@@ -231,6 +326,14 @@ def configure_and_reindex(
 
     backup = os.path.abspath(os.path.expanduser(str(backup_root)))
     excluded = _normalize_roots([program_dir(), backup])
+    ntfs_roots, folder_roots, filesystems = _split_index_roots(selected)
+
+    if ntfs_roots and os.name == "nt" and not _is_admin():
+        drives = ", ".join(ntfs_roots)
+        raise PortableEverythingError(
+            f"NTFS 快速索引需要读取 MFT/USN。当前 FileCheck 未以管理员权限运行。"
+            f"请右键“以管理员身份运行”后重试。NTFS 磁盘: {drives}"
+        )
 
     # Reconfiguration is performed with only the dedicated FileCheck instance
     # stopped. A separately installed/default Everything instance is untouched.
@@ -238,20 +341,34 @@ def configure_and_reindex(
         stop_instance(everything)
         time.sleep(0.3)
     except PortableEverythingError:
-        # find_everything_exe below will produce the actionable error.
         pass
 
-    ini = _write_ini(selected, excluded)
+    ini = _write_ini(
+        selected,
+        excluded,
+        ntfs_roots=ntfs_roots,
+        folder_roots=folder_roots,
+    )
     status = start_instance(everything, es=es)
-    reindex(es, instance=FILECHECK_INSTANCE, timeout=1800)
+    reindex(es, instance=FILECHECK_INSTANCE, timeout=1800, progress=progress)
     status = get_status(es, instance=FILECHECK_INSTANCE)
+
+    if ntfs_roots and not folder_roots:
+        index_mode = "portable-ntfs-fast"
+    elif ntfs_roots:
+        index_mode = "portable-hybrid"
+    else:
+        index_mode = "portable-folder-index"
 
     state = {
         "schema_version": 1,
         "updated_at": now_iso(),
         "instance": FILECHECK_INSTANCE,
-        "index_mode": "portable-folder-index",
+        "index_mode": index_mode,
         "selected_roots": selected,
+        "ntfs_roots": ntfs_roots,
+        "folder_roots": folder_roots,
+        "filesystems": filesystems,
         "backup_root": backup,
         "excluded_roots": excluded,
         "everything_exe": str(find_everything_exe(everything)),
@@ -267,6 +384,8 @@ def configure_and_reindex(
         database_path=everything_db_path(),
         selected_roots=tuple(selected),
         excluded_roots=tuple(excluded),
+        ntfs_roots=tuple(ntfs_roots),
+        folder_roots=tuple(folder_roots),
     )
 
 
