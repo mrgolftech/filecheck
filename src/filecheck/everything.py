@@ -66,12 +66,27 @@ def find_es(explicit: str | None = None) -> Path:
     )
 
 
-def _run(es_path: Path, args: list[str], timeout: int = 30) -> str:
+def _run(
+    es_path: Path,
+    args: list[str],
+    timeout: int = 30,
+    *,
+    argv_mode: bool = False,
+) -> str:
     creationflags = 0
     if os.name == "nt":
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+    # ES <= 1.1.0.36 used a custom Windows command-line parser which can split
+    # arguments produced by Python/PowerShell incorrectly. ES 1.1.0.37 added
+    # -argv to opt into CommandLineToArgvW. It must be the first ES parameter.
+    command = [str(es_path)]
+    if argv_mode:
+        command.append("-argv")
+    command.extend(args)
+
     proc = subprocess.run(
-        [str(es_path), *args],
+        command,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         timeout=timeout,
@@ -88,6 +103,16 @@ def _run(es_path: Path, args: list[str], timeout: int = 30) -> str:
     return stdout
 
 
+def _version_tuple(value: str) -> tuple[int, ...]:
+    parts: list[int] = []
+    for token in value.strip().split("."):
+        digits = "".join(ch for ch in token if ch.isdigit())
+        if not digits:
+            break
+        parts.append(int(digits))
+    return tuple(parts)
+
+
 def get_status(es: str | None = None) -> EverythingStatus:
     es_path = find_es(es)
     es_version = _run(es_path, ["-version"])
@@ -95,6 +120,11 @@ def get_status(es: str | None = None) -> EverythingStatus:
     if not everything_version.startswith("1.4."):
         raise EverythingError(
             f"当前 Everything 版本为 {everything_version}，V0.1 按 1.4.x 环境验证。"
+        )
+    if _version_tuple(es_version) < (1, 1, 0, 37):
+        raise EverythingError(
+            f"当前 ES CLI 版本为 {es_version}；V0.1 要求 ES 1.1.0.37 或更高版本，"
+            "以使用 -argv 避免 Windows 参数解析错误。"
         )
     return EverythingStatus(str(es_path), es_version, everything_version)
 
@@ -105,6 +135,8 @@ def _safe_keyword(keyword: str) -> str:
         raise ValueError("关键词不能为空")
     if '"' in keyword:
         raise ValueError(f"V0.1 暂不支持包含双引号的关键词: {keyword!r}")
+    # Quotes are Everything search syntax (exact phrase), not shell quoting.
+    # With ES 1.1.0.37 -argv they survive Python's Windows argv handling safely.
     return f'"{keyword}"'
 
 
@@ -124,14 +156,14 @@ def search_keyword(
     query = f"{_safe_keyword(keyword)} ext:{';'.join(ext_list)}"
     # /a-d asks Everything itself for files only. -path is applied by Everything
     # before -n limiting, avoiding false omissions when scanning one drive/folder.
-    args = ["-timeout", "10000", "/a-d", "-full-path", "-n", str(max_results), "-s"]
+    args = ["-timeout", "10000", "/a-d", "-full-path-and-name", "-n", str(max_results), "-s"]
     if match_path:
         args.append("-p")
     if path_prefix:
         args.extend(["-path", str(Path(path_prefix).expanduser())])
     args.append(query)
 
-    output = _run(es_path, args, timeout=60)
+    output = _run(es_path, args, timeout=60, argv_mode=True)
     prefix = os.path.normcase(os.path.abspath(path_prefix)) if path_prefix else None
     results: list[Path] = []
     for line in output.splitlines():
