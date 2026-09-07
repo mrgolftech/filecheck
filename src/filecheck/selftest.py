@@ -6,6 +6,7 @@ import tempfile
 from pathlib import Path
 
 from .backup import create_backup, restore_backup, verify_backup
+from .migration import preflight_migration, remove_verified_sources
 
 
 def _sha256(path: Path) -> str:
@@ -84,13 +85,48 @@ def _exercise(zip_mode: bool) -> int:
         return len(expected)
 
 
+def _exercise_migration(zip_mode: bool) -> int:
+    with tempfile.TemporaryDirectory(prefix="filecheck-migrate-selftest-") as tmp:
+        base = Path(tmp)
+        source = base / "待迁移"
+        backup_root = base / "备份"
+        source.mkdir()
+        expected = _make_fixture(source)
+
+        backup = create_backup([source], backup_root, zip_mode=zip_mode)
+        preflight = preflight_migration(backup)
+        if preflight["files"] != len(expected):
+            raise RuntimeError("迁移自检源文件复核数量不一致")
+
+        state_path, state = remove_verified_sources(backup, preflight=False, checkpoint_every=2)
+        if state["status"] != "completed" or state["deleted"] != len(expected):
+            raise RuntimeError(f"迁移自检源文件移除失败: {state_path}")
+        for raw in expected:
+            if Path(raw).exists():
+                raise RuntimeError(f"迁移自检源文件仍存在: {raw}")
+
+        # The backup must remain fully valid after source removal.
+        verify_backup(backup)
+        restored = restore_backup(backup, conflict="skip")
+        if sum(row["state"] == "restored" for row in restored) != len(expected):
+            raise RuntimeError("迁移自检恢复数量不一致")
+        _assert_restored(expected)
+        return len(expected)
+
+
 def run_selftest() -> dict[str, str]:
     directory_count = _exercise(zip_mode=False)
     zip_count = _exercise(zip_mode=True)
+    migrate_directory_count = _exercise_migration(zip_mode=False)
+    migrate_zip_count = _exercise_migration(zip_mode=True)
     return {
         "directory_roundtrip": f"PASS ({directory_count} files)",
         "zip_roundtrip": f"PASS ({zip_count} files)",
+        "migration_directory_roundtrip": f"PASS ({migrate_directory_count} files)",
+        "migration_zip_roundtrip": f"PASS ({migrate_zip_count} files)",
         "sha256_verification": "PASS",
         "conflict_skip": "PASS",
         "conflict_overwrite": "PASS",
+        "migration_source_recheck": "PASS",
+        "migration_restore": "PASS",
     }
