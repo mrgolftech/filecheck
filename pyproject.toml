@@ -9,7 +9,7 @@ description = "Windows offline file self-check, backup and restore tool accelera
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [{name = "mrgolftech"}]
-dependencies = []
+dependencies = ["colorama>=0.4.6,<1"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8,<9"]
