@@ -7,6 +7,8 @@ from datetime import datetime
 from pathlib import Path
 
 from . import cli
+from .backup import read_backup_manifest
+from .migration import remove_verified_sources
 from .util import app_data_dir
 
 
@@ -52,9 +54,6 @@ def _capacity_from_scan(payload: dict) -> dict[str, int]:
         "unknown": unknown,
         "payload_bytes": known_total,
         "directory_required": known_total + reserve,
-        # Current ZIP implementation keeps a verified staging copy while a
-        # temporary archive is being created, so 2x input + reserve is the
-        # conservative peak working-space estimate.
         "zip_required": known_total * 2 + reserve,
     }
 
@@ -293,6 +292,50 @@ def _restore_flow() -> int:
     return cli.main(["restore", backup, "--conflict", conflict])
 
 
+def _delete_sources_flow() -> int:
+    backup_text = _ask("请输入已完成备份的批次目录或 ZIP 路径")
+    if not backup_text:
+        return 0
+    backup = Path(backup_text).expanduser().resolve()
+    manifest = read_backup_manifest(backup)
+    files = len(manifest["items"])
+    total_bytes = sum(int(item["size"]) for item in manifest["items"])
+
+    print("\n准备从已完成备份执行源文件删除")
+    print(f"  备份: {backup}")
+    print(f"  批次: {manifest.get('batch_id', '-')}")
+    print(f"  manifest 文件数: {files}")
+    print(f"  源文件总大小: {_format_bytes(total_bytes)}")
+    print(
+        cli._warning(
+            "删除前程序会重新对整个备份做 SHA-256 验证，并逐个复核源文件与 manifest 的大小和 SHA-256。"
+            "任一文件不一致时不会启动删除阶段。"
+        )
+    )
+    print(cli._warning("只删除 manifest 中明确列出的源文件，不递归删除目录，也不删除其他同目录文件。"))
+
+    answer = _ask(f"确认进入安全删除流程并处理以上 {files} 个源文件？输入 YES 继续")
+    if answer.strip().upper() != "YES":
+        print(cli._warning("已取消源文件删除。"))
+        return 0
+
+    progress = getattr(cli, "_progress", None)
+    state_file, state = remove_verified_sources(
+        backup,
+        progress=progress,
+        preflight=True,
+    )
+    print(f"  状态文件: {state_file}")
+    print(f"  deleted={state.get('deleted', 0)}")
+    print(f"  already_absent={state.get('already_absent', 0)}")
+    print(f"  failed={state.get('failed', 0)}")
+    if state.get("failed", 0):
+        print(cli._warning("部分源文件未删除。关闭占用程序/处理权限后，从“继续未完成的备份 / 迁移”继续。"))
+        return 2
+    print(cli._success("源文件删除完成；已验证备份保持不变。"))
+    return 0
+
+
 def _resume_flow() -> int:
     state = _ask("请输入 *.migration.json 状态文件路径")
     if not state:
@@ -302,17 +345,18 @@ def _resume_flow() -> int:
 
 def _print_main_menu() -> None:
     print("\n" + "=" * 64)
-    print(cli._info("FileCheck V0.1 · 文件扫描 / 批量备份 / 迁移 / 恢复"))
+    print(cli._info("FileCheck V0.1 · 文件扫描 / 批量备份 / 验证 / 源文件处理 / 恢复"))
     print("=" * 64)
     print("  1. 检查 Everything / ES 环境")
     print("  2. 扫描并处理（推荐入口）")
     print("  3. 使用已有扫描结果批量备份")
-    print("  4. 使用已有扫描结果迁移（会进入源文件移除确认）")
+    print("  4. 使用已有扫描结果迁移（备份后直接进入源文件移除）")
     print("  5. 验证已有备份")
     print("  6. 从备份恢复到原路径")
-    print("  7. 继续未完成的迁移")
-    print("  8. 运行本机自检")
-    print("  9. 显示高级命令帮助")
+    print("  7. 删除已验证备份对应的源文件")
+    print("  8. 继续未完成的备份 / 迁移")
+    print("  9. 运行本机自检")
+    print(" 10. 显示高级命令帮助")
     print("  0. 退出")
 
 
@@ -322,7 +366,7 @@ def run_menu() -> int:
         try:
             choice = _ask_choice(
                 "请选择功能",
-                {str(i) for i in range(10)},
+                {str(i) for i in range(11)},
                 default="2",
             )
             if choice == "0":
@@ -344,10 +388,12 @@ def run_menu() -> int:
             elif choice == "6":
                 _restore_flow()
             elif choice == "7":
-                _resume_flow()
+                _delete_sources_flow()
             elif choice == "8":
-                cli.main(["selftest"])
+                _resume_flow()
             elif choice == "9":
+                cli.main(["selftest"])
+            elif choice == "10":
                 cli.build_parser().print_help()
         except MenuExit:
             print("\n返回主菜单。")
