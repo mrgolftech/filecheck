@@ -146,14 +146,14 @@ def test_source_change_during_copy_aborts_backup(tmp_path: Path, monkeypatch: py
     source = tmp_path / "src.txt"
     source.write_bytes(b"original")
     destination = tmp_path / "backup"
-    real_copy2 = shutil.copy2
+    real_copy = backup_mod._copy_source_to_temp_with_hash
 
-    def changing_copy(src, dst, *args, **kwargs):
-        result = real_copy2(src, dst, *args, **kwargs)
+    def changing_copy(src: Path, temp: Path):
+        result = real_copy(src, temp)
         Path(src).write_bytes(b"changed while copying")
         return result
 
-    monkeypatch.setattr(backup_mod.shutil, "copy2", changing_copy)
+    monkeypatch.setattr(backup_mod, "_copy_source_to_temp_with_hash", changing_copy)
     with pytest.raises(BackupError, match="发生变化"):
         create_backup([source], destination)
 
