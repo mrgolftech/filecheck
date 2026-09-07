@@ -52,6 +52,19 @@ python -m pytest -q
 filecheck selftest
 ```
 
+当前回归基线：
+
+```text
+48 automated tests PASS
+Windows 3.10       PASS
+Windows 3.12       PASS
+Ubuntu 3.10        PASS
+Ubuntu 3.12        PASS
+selftest × 4       PASS
+```
+
+Windows 和 Ubuntu 都运行同一套单元、故障注入、批量迁移压力及 CLI 端到端回归；Windows runner 已覆盖修正后的 writable-handle `fsync` 行为。
+
 ### 2.1 Everything / 扫描逻辑
 
 覆盖：
@@ -111,6 +124,8 @@ filecheck selftest
 - state 不能写入 directory backup 内部；
 - 已记录删除的 source_path 后来重新出现：标记 `reappeared`，不删除；
 - 250 文件批量迁移压力测试；
+- CLI `backup --from-scan` 默认全部候选端到端；
+- CLI `migrate --from-scan --yes` directory/ZIP 端到端；
 - migration selftest directory/ZIP 闭环。
 
 ## 3. 当前真实 Windows 验收证据
@@ -118,7 +133,7 @@ filecheck selftest
 已完成一组受控 Windows + Everything 1.4 实机验证：
 
 - ES CLI 1.1.0.37 `-argv` 实际查询成功；
-- Everything 1.4 实际 IPC 成功；
+- Everything 1.4.1.877 实际 IPC 成功；
 - FileCheck 实际扫描得到预期 3 个关键词候选；
 - directory backup：4 个测试文件全部备份并独立 verify；
 - 人工移走原测试目录后，directory restore：`restored=4, skipped=0`；
@@ -327,7 +342,7 @@ Windows preflight 直接失败，不开始其它目标恢复。
 
 进入真实重要数据使用前要求：
 
-1. 最新 head 的四平台 CI 全绿；
+1. 最新功能代码的四平台 CI 全绿；
 2. `filecheck selftest` 四平台通过；
 3. Everything 1.4 实机 scan 通过；
 4. directory + ZIP 实机备份/恢复 SHA-256 通过；
