@@ -5,9 +5,10 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
+from typing import Callable, Iterable
 
 
 class EverythingError(RuntimeError):
@@ -188,9 +189,61 @@ def get_status(es: str | None = None, *, instance: str | None = None) -> Everyth
     return EverythingStatus(str(es_path), es_version, everything_version, instance)
 
 
-def reindex(es: str | None = None, *, instance: str | None = None, timeout: int = 900) -> None:
+def reindex(
+    es: str | None = None,
+    *,
+    instance: str | None = None,
+    timeout: int = 900,
+    progress: Callable[[float], None] | None = None,
+    interval: float = 1.0,
+) -> None:
+    """Force an Everything rebuild and optionally report live elapsed time.
+
+    ES 1.1 / Everything 1.4 does not expose a reliable per-file percentage.
+    The ES -reindex process stays alive until the rebuild is complete, so we
+    can report a truthful live busy/elapsed status without inventing a percent.
+    """
     es_path = find_es(es)
-    _run(es_path, _with_instance(["-reindex"], instance), timeout=timeout, argv_mode=True)
+    args = _with_instance(["-reindex"], instance)
+    if progress is None:
+        _run(es_path, args, timeout=timeout, argv_mode=True)
+        return
+
+    command = _build_command(es_path, args, argv_mode=True)
+    proc = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        creationflags=_creationflags(),
+    )
+    started = time.monotonic()
+    tick = max(0.2, float(interval))
+    stdout_bytes = b""
+    stderr_bytes = b""
+    try:
+        while True:
+            elapsed = time.monotonic() - started
+            remaining = float(timeout) - elapsed
+            if remaining <= 0:
+                proc.kill()
+                proc.communicate()
+                raise EverythingError(f"Everything 索引超时（>{timeout} 秒）")
+            try:
+                stdout_bytes, stderr_bytes = proc.communicate(timeout=min(tick, remaining))
+                break
+            except subprocess.TimeoutExpired:
+                progress(time.monotonic() - started)
+        progress(time.monotonic() - started)
+    except BaseException:
+        if proc.poll() is None:
+            proc.kill()
+            proc.communicate()
+        raise
+
+    stdout = _decode(stdout_bytes).strip()
+    stderr = _decode(stderr_bytes).strip()
+    completed = subprocess.CompletedProcess(command, int(proc.returncode or 0), stdout_bytes, stderr_bytes)
+    _raise_for_es_error(completed, stdout, stderr)
 
 
 def _safe_keyword(keyword: str) -> str:
