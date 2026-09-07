@@ -14,6 +14,7 @@ class MigrationError(BackupError):
 
 _STATE_SCHEMA_VERSION = 1
 _DEFAULT_CHECKPOINT_EVERY = 50
+_ALLOWED_ITEM_STATES = {"pending", "deleted", "already_absent", "failed", "reappeared"}
 
 
 def migration_state_path(backup: str | Path) -> Path:
@@ -26,13 +27,21 @@ def _notify(progress: ProgressCallback | None, stage: str, current: int, total: 
         progress(stage, current, total, str(path))
 
 
+def _entry_exists(path: Path) -> bool:
+    """Return True for regular entries and also for broken symlinks."""
+    try:
+        return path.exists() or path.is_symlink()
+    except OSError:
+        return True
+
+
 def _check_source_item(item: dict) -> tuple[bool, str | None]:
     source = Path(item["source_path"])
     try:
-        if not source.exists():
-            return False, "源文件不存在"
         if source.is_symlink():
             return False, "源路径已变成符号链接/重解析入口"
+        if not source.exists():
+            return False, "源文件不存在"
         if not source.is_file():
             return False, "源路径已不是普通文件"
 
@@ -157,6 +166,8 @@ def _validate_state(state: dict, manifest: dict, backup: Path) -> dict[str, dict
         if key in seen:
             raise MigrationError(f"migration state 源路径重复: {row['source_path']}")
         seen.add(key)
+        if row.get("state") not in _ALLOWED_ITEM_STATES:
+            raise MigrationError(f"migration state 包含未知状态: {row.get('state')}")
         if row.get("size") != item["size"] or str(row.get("sha256", "")).lower() != str(item["sha256"]).lower():
             raise MigrationError(f"migration state 文件摘要与 manifest 不一致: {row['source_path']}")
 
@@ -169,7 +180,7 @@ def _recount(state: dict) -> None:
     rows = state["items"]
     state["deleted"] = sum(row.get("state") == "deleted" for row in rows)
     state["already_absent"] = sum(row.get("state") == "already_absent" for row in rows)
-    state["failed"] = sum(row.get("state") == "failed" for row in rows)
+    state["failed"] = sum(row.get("state") in ("failed", "reappeared") for row in rows)
     finished = state["deleted"] + state["already_absent"]
     if finished == state["total"]:
         state["status"] = "completed"
@@ -202,6 +213,19 @@ def _remove_one(row: dict, manifest_item: dict) -> None:
     row["error"] = None
 
 
+def _reject_unsafe_state_location(state_file: Path, backup: Path, manifest_map: dict[str, dict]) -> None:
+    state_key = os.path.normcase(os.path.abspath(str(state_file)))
+    if state_key in manifest_map:
+        raise MigrationError("迁移状态文件不能覆盖 manifest 中的源文件")
+    if backup.is_dir():
+        try:
+            state_file.relative_to(backup)
+        except ValueError:
+            pass
+        else:
+            raise MigrationError("迁移状态文件不能写入备份批次目录内部")
+
+
 def remove_verified_sources(
     backup: str | Path,
     *,
@@ -223,12 +247,13 @@ def remove_verified_sources(
         _preflight_items(manifest["items"], progress=progress)
 
     state_file = Path(state_path).expanduser().resolve() if state_path else migration_state_path(backup_path)
+    manifest_map = _manifest_by_source(manifest)
+    _reject_unsafe_state_location(state_file, backup_path, manifest_map)
     if state_file.exists():
         raise MigrationError(f"迁移状态文件已存在，请使用 migrate-resume: {state_file}")
     state_file.parent.mkdir(parents=True, exist_ok=True)
 
     state = _new_state(backup_path, manifest)
-    manifest_map = _manifest_by_source(manifest)
     _checkpoint(state_file, state)
 
     total = len(state["items"])
@@ -265,14 +290,25 @@ def resume_migration(
     # Always verify the complete backup again before retrying any removal.
     manifest = verify_backup(backup_path)
     manifest_map = _validate_state(state, manifest, backup_path)
+    _reject_unsafe_state_location(state_file, backup_path, manifest_map)
 
-    retry_rows = [row for row in state["items"] if row.get("state") not in ("deleted", "already_absent")]
+    # A path that was already recorded as removed but has reappeared may contain
+    # newly-created data. Never auto-delete it during resume, even if its content
+    # happens to match the old backup byte-for-byte.
+    for row in state["items"]:
+        if row.get("state") in ("deleted", "already_absent"):
+            source = Path(row["source_path"])
+            if _entry_exists(source):
+                row["state"] = "reappeared"
+                row["error"] = "源路径在此前移除后重新出现；为避免删除新数据，本次不自动处理"
+
+    retry_rows = [row for row in state["items"] if row.get("state") in ("pending", "failed")]
     total = len(retry_rows)
     every = max(1, int(checkpoint_every))
 
     for index, row in enumerate(retry_rows, start=1):
         source = Path(row["source_path"])
-        if not source.exists():
+        if not _entry_exists(source):
             row["state"] = "already_absent"
             row["error"] = None
         else:
