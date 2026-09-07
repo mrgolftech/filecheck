@@ -18,18 +18,18 @@ def test_search_keyword_builds_query_and_filters_path(tmp_path: Path, monkeypatc
 
     captured: dict[str, object] = {}
 
-    def fake_run(
+    def fake_run_export_txt(
         es_path: Path,
         args: list[str],
-        timeout: int = 30,
+        timeout: int = 60,
         *,
-        argv_mode: bool = False,
+        argv_mode: bool = True,
     ) -> str:
         captured["args"] = args
         captured["argv_mode"] = argv_mode
         return f"{inside}\n{outside}\n"
 
-    monkeypatch.setattr(everything, "_run", fake_run)
+    monkeypatch.setattr(everything, "_run_export_txt", fake_run_export_txt)
     result = everything.search_keyword(
         Path("es.exe"),
         "机密",
@@ -63,6 +63,48 @@ def test_run_argv_mode_places_switch_first(monkeypatch: pytest.MonkeyPatch) -> N
     assert command[0] == "es.exe"
     assert command[1] == "-argv"
     assert command[2:] == ["-path", r"C:\Test", "机密 ext:txt"]
+
+
+def test_utf8_export_preserves_nonbreaking_space_and_unicode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    expected = tmp_path / "HSMD1算法芯片数据手册\u00a0V2.4-兴唐通信科技有限公司.pdf"
+    captured: dict[str, object] = {}
+
+    def fake_subprocess_run(command, **kwargs):
+        captured["command"] = command
+        export_index = command.index("-export-txt")
+        export_path = Path(command[export_index + 1])
+        export_path.write_bytes(("\ufeff" + str(expected) + "\r\n").encode("utf-8"))
+        return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(everything.subprocess, "run", fake_subprocess_run)
+    output = everything._run_export_txt(
+        Path("es.exe"),
+        ["-full-path-and-name", '"算法" ext:pdf'],
+        argv_mode=True,
+    )
+
+    assert output == str(expected)
+    command = captured["command"]
+    assert command[0] == "es.exe"
+    assert command[1] == "-argv"
+    assert "-export-txt" in command
+    assert "-utf8-bom" in command
+    assert "?" not in output
+    assert "\u00a0" in output
+
+
+def test_search_keyword_returns_exact_unicode_export_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    expected = tmp_path / "HSMD1算法芯片数据手册\u00a0V2.4-兴唐通信科技有限公司.pdf"
+    monkeypatch.setattr(everything, "_run_export_txt", lambda *args, **kwargs: str(expected))
+
+    result = everything.search_keyword(Path("es.exe"), "算法", ["pdf"])
+
+    assert result == [expected]
+    assert result[0].name == "HSMD1算法芯片数据手册\u00a0V2.4-兴唐通信科技有限公司.pdf"
 
 
 def test_scan_keywords_deduplicates_and_uses_highest_severity(
@@ -127,6 +169,6 @@ def test_indexed_but_inaccessible_result_is_retained(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     missing = tmp_path / "indexed-but-currently-unavailable.txt"
-    monkeypatch.setattr(everything, "_run", lambda *args, **kwargs: str(missing))
+    monkeypatch.setattr(everything, "_run_export_txt", lambda *args, **kwargs: str(missing))
     result = everything.search_keyword(Path("es.exe"), "unavailable", ["txt"])
     assert result == [missing]
