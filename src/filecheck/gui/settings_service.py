@@ -5,7 +5,6 @@ from pathlib import Path
 from typing import Dict, List, Optional, Union
 
 from filecheck import cli
-from filecheck.portable_everything import load_index_state
 from filecheck.util import read_json, runtime_dir, write_json
 
 
@@ -59,23 +58,8 @@ def current_backup_roots() -> List[str]:
     payload = _read_runtime_settings()
     configured = payload.get("backup_roots")
     if isinstance(configured, list):
-        roots = _normalize_backup_roots([str(value) for value in configured])
-        if roots:
-            return roots
+        return _normalize_backup_roots([str(value) for value in configured])
     legacy = str(payload.get("backup_root") or "").strip()
-    if legacy:
-        return _normalize_backup_roots([legacy])
-
-    try:
-        state = load_index_state(required=False) or {}
-    except Exception:
-        state = {}
-    indexed = state.get("backup_roots")
-    if isinstance(indexed, list):
-        roots = _normalize_backup_roots([str(value) for value in indexed])
-        if roots:
-            return roots
-    legacy = str(state.get("backup_root") or "").strip()
     return _normalize_backup_roots([legacy]) if legacy else []
 
 
