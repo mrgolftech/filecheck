@@ -63,6 +63,16 @@ def _write_skipped_report(backup: Path, results: list[dict]) -> Path | None:
 
 def cmd_restore(args) -> int:
     backup = Path(args.backup).expanduser().resolve()
+    manifest = read_backup_manifest(backup)
+    file_count = len(manifest["items"])
+    print(
+        legacy._info(
+            f"正在执行恢复前备份完整性校验（SHA-256），共 {file_count} 个文件；"
+            "文件较多或较大时可能需要一些时间，请稍候……"
+        )
+    )
+    print(legacy._info("校验通过后将自动开始恢复。"))
+
     results = restore_backup(backup, conflict=args.conflict, progress=legacy._progress)
     restored = sum(1 for row in results if row["state"] == "restored")
     skipped = sum(1 for row in results if row["state"] == "skipped")
