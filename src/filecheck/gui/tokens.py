@@ -5,6 +5,7 @@ class Palette:
     PRIMARY = "#2563EB"
     PRIMARY_HOVER = "#1D4ED8"
     PRIMARY_SOFT = "#EFF6FF"
+    ON_PRIMARY = "#FFFFFF"
 
     BG = "#F4F7FB"
     SURFACE = "#FFFFFF"
