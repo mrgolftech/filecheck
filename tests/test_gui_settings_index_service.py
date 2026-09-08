@@ -44,55 +44,81 @@ def _rules_file(tmp_path: Path) -> Path:
     return rules_path
 
 
-def test_settings_service_persists_multiple_backup_roots_rules_and_appearance(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_settings_service_persists_single_backup_root_rules_and_appearance(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     rules_path = _rules_file(tmp_path)
     runtime = tmp_path / "runtime"
     monkeypatch.setattr(settings_service.cli, "_default_rules_path", lambda: str(rules_path))
     monkeypatch.setattr(settings_service, "runtime_dir", lambda: runtime)
 
-    backup_a = tmp_path / "backup-a"
-    backup_b = tmp_path / "backup-b"
+    backup_root = tmp_path / "backup"
     saved = settings_service.save_settings(
-        [str(backup_a), str(backup_b), str(backup_a)],
+        str(backup_root),
         {"high": ["绝密", "绝密"], "sensitive": ["秘密"], "review": ["方案"]},
         ["DOCX", ".pdf", "pdf"],
         appearance="dark",
     )
 
-    assert saved.backup_roots == [str(backup_a.resolve()), str(backup_b.resolve())]
-    assert saved.backup_root == str(backup_a.resolve())
+    assert saved.backup_root == str(backup_root.resolve())
+    assert saved.backup_roots == [str(backup_root.resolve())]
     assert saved.appearance == "dark"
     assert saved.keywords["high"] == ["绝密"]
     assert saved.extensions == ["docx", "pdf"]
+    assert backup_root.is_dir()
     persisted = json.loads(rules_path.read_text(encoding="utf-8"))
     assert persisted["keywords"]["review"] == ["方案"]
     assert persisted["extensions"] == ["docx", "pdf"]
     runtime_payload = json.loads((runtime / "settings.json").read_text(encoding="utf-8"))
-    assert runtime_payload["backup_roots"] == [str(backup_a.resolve()), str(backup_b.resolve())]
+    assert runtime_payload["backup_root"] == str(backup_root.resolve())
+    assert "backup_roots" not in runtime_payload
     assert runtime_payload["appearance"] == "dark"
 
 
-def test_backup_roots_require_explicit_settings_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_settings_service_rejects_multiple_backup_roots(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    rules_path = _rules_file(tmp_path)
+    monkeypatch.setattr(settings_service.cli, "_default_rules_path", lambda: str(rules_path))
     monkeypatch.setattr(settings_service, "runtime_dir", lambda: tmp_path / "runtime")
-    assert settings_service.current_backup_roots() == []
+    with pytest.raises(RuntimeError, match="只支持一个"):
+        settings_service.save_settings(
+            [str(tmp_path / "backup-a"), str(tmp_path / "backup-b")],
+            {"high": ["机密"], "sensitive": [], "review": []},
+            ["txt"],
+        )
+
+
+def test_backup_root_requires_explicit_settings_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings_service, "runtime_dir", lambda: tmp_path / "runtime")
     assert settings_service.current_backup_root() is None
+    assert settings_service.current_backup_roots() == []
+
+
+def test_legacy_multiple_root_settings_migrate_first_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    first = tmp_path / "backup-a"
+    second = tmp_path / "backup-b"
+    (runtime / "settings.json").write_text(
+        json.dumps({"schema_version": 2, "backup_roots": [str(first), str(second)]}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(settings_service, "runtime_dir", lambda: runtime)
+    assert settings_service.current_backup_root() == str(first.resolve())
+    assert settings_service.current_backup_roots() == [str(first.resolve())]
 
 
 def test_save_appearance_does_not_require_backup_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings_service, "runtime_dir", lambda: tmp_path / "runtime")
     assert settings_service.save_appearance("dark") == "dark"
     assert settings_service.current_appearance() == "dark"
-    assert settings_service.current_backup_roots() == []
+    assert settings_service.current_backup_root() is None
 
 
-def test_gui_index_service_uses_all_backup_roots_and_truthful_elapsed_progress(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(index_service, "current_backup_roots", lambda: [r"H:\FileCheckBackup", r"I:\FileCheckBackup"])
+def test_gui_index_service_uses_hardened_db_persistence_and_truthful_elapsed_progress(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(index_service, "current_backup_root", lambda: r"H:\FileCheckBackup")
     captured = {}
 
-    def fake_configure(selected_roots, backup_root, additional_excluded_roots=(), progress=None):
+    def fake_configure(selected_roots, backup_root, progress=None):
         captured["roots"] = list(selected_roots)
         captured["backup_root"] = backup_root
-        captured["additional"] = list(additional_excluded_roots)
         if progress is not None:
             progress(3.2)
             progress(8.7)
@@ -105,13 +131,12 @@ def test_gui_index_service_uses_all_backup_roots_and_truthful_elapsed_progress(m
             status=SimpleNamespace(everything_version="1.4.1.1032", es_version="1.1.0.37"),
         )
 
-    monkeypatch.setattr(index_service, "configure_and_reindex", fake_configure)
+    monkeypatch.setattr(index_service.db_persistence, "configure_and_reindex", fake_configure)
     task = FakeTask()
     result = index_service.run_index_build(["C:\\", "D:\\"], task)
 
     assert captured["roots"] == ["C:\\", "D:\\"]
     assert captured["backup_root"] == r"H:\FileCheckBackup"
-    assert captured["additional"] == [r"I:\FileCheckBackup"]
     assert result.selected_roots == ["C:\\", "D:\\"]
     elapsed_updates = [(value, message) for value, message in task.progress if "已运行" in message]
     assert elapsed_updates
@@ -120,6 +145,6 @@ def test_gui_index_service_uses_all_backup_roots_and_truthful_elapsed_progress(m
 
 
 def test_gui_index_service_rejects_missing_backup_settings(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(index_service, "current_backup_roots", lambda: [])
+    monkeypatch.setattr(index_service, "current_backup_root", lambda: None)
     with pytest.raises(RuntimeError, match="设置"):
         index_service.run_index_build(["C:\\"], FakeTask())
