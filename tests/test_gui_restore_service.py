@@ -14,11 +14,16 @@ from filecheck.gui.task_runner import TaskCancelled
 
 
 class FakeTask:
-    def __init__(self, cancel_after_first_restore: bool = False) -> None:
+    def __init__(
+        self,
+        cancel_after_first_restore: bool = False,
+        cancel_during_verify: bool = False,
+    ) -> None:
         self.logs = []
         self.progress = []
         self.cancelled = False
         self.cancel_after_first_restore = cancel_after_first_restore
+        self.cancel_during_verify = cancel_during_verify
 
     def log(self, message: str) -> None:
         self.logs.append(message)
@@ -26,6 +31,8 @@ class FakeTask:
     def set_progress(self, progress, message: str = "") -> None:
         self.progress.append((progress, message))
         if self.cancel_after_first_restore and message.startswith("正在恢复文件：1/"):
+            self.cancelled = True
+        if self.cancel_during_verify and message.startswith("正式恢复前再次验证备份：1/"):
             self.cancelled = True
 
     def raise_if_cancelled(self) -> None:
@@ -78,6 +85,18 @@ def test_restore_service_supports_skip_rename_and_overwrite(tmp_path: Path) -> N
     assert overwrite.restored == 1
     assert overwrite.skipped == 0
     assert source.read_text(encoding="utf-8") == "backup-version"
+
+
+def test_restore_cancel_during_verify_touches_no_target(tmp_path: Path) -> None:
+    source = tmp_path / "source.txt"
+    source.write_text("backup-version", encoding="utf-8")
+    backup_path = create_backup([source], tmp_path / "backup")
+    source.unlink()
+
+    with pytest.raises(TaskCancelled, match="写入任何目标文件之前"):
+        run_restore(backup_path, "skip", FakeTask(cancel_during_verify=True))
+
+    assert not source.exists()
 
 
 def test_restore_cancel_stops_after_completed_file_and_skip_can_resume(tmp_path: Path) -> None:
