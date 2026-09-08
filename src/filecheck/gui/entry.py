@@ -7,6 +7,7 @@ from tkinter import messagebox
 import customtkinter as ctk
 
 from .app import FileCheckApp
+from .batch_selector import attach_backup_batch_selector
 from .settings_service import current_appearance
 
 
@@ -45,8 +46,8 @@ def _install_runtime_policy(is_admin: bool) -> None:
     original_resume = FileCheckApp._resume_removal
     original_restore = FileCheckApp._start_restore
 
-    def wrapped_save(self, backup_roots, keywords, extensions) -> None:
-        original_save(self, backup_roots, keywords, extensions)
+    def wrapped_save(self, backup_root, keywords, extensions) -> None:
+        original_save(self, backup_root, keywords, extensions)
         _invalidate_scan_basis(self, "扫描设置或备份目录已变化，旧扫描结果已失效。请重新扫描。")
 
     def wrapped_handle(self, event) -> None:
@@ -108,11 +109,28 @@ def _install_runtime_policy(is_admin: bool) -> None:
     )
 
 
+def _attach_batch_selectors(app: FileCheckApp) -> None:
+    removal_page = app._pages.get("migration")
+    if removal_page is not None and not hasattr(removal_page, "_filecheck_batch_selector"):
+        attach_backup_batch_selector(
+            removal_page,
+            lambda value: app._load_removal_target(value),
+        )
+
+    restore_page = app._pages.get("restore")
+    if restore_page is not None and not hasattr(restore_page, "_filecheck_batch_selector"):
+        attach_backup_batch_selector(
+            restore_page,
+            lambda value: app._load_restore_target(value),
+        )
+
+
 def create_app() -> FileCheckApp:
     admin = is_windows_admin()
     _install_runtime_policy(admin)
     app = FileCheckApp()
     ctk.set_appearance_mode(current_appearance())
+    _attach_batch_selectors(app)
     app._filecheck_is_admin = admin
     base_title = app.title()
     app.title(f"{base_title} [{'管理员' if admin else '非管理员'}]")
