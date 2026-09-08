@@ -6,8 +6,10 @@ import sys
 
 from . import cli as legacy_cli
 from . import db_persistence
+from . import deletion_runtime
 from . import fast_index
 from . import menu
+from . import menu_layout
 from . import resilient_cli
 from . import restore_reporting
 from . import resume_ui
@@ -28,6 +30,18 @@ menu.cli = resilient_cli
 menu._environment_and_index_flow = fast_index.environment_and_index_flow
 menu._resume_flow = resume_ui.menu_resume_flow
 
+# Use one strong batch SHA-256 preflight before deletion.  Once the user
+# confirms, each source is checked against the preflight metadata snapshot and
+# then deleted without hashing the whole file a second time.  Read-only files
+# are retried after clearing only the read-only bit.  Deletion checkpoints are
+# batched to avoid rewriting the full state file for every source.
+deletion_runtime.install()
+
+# Keep the main menu focused on the normal workflow: backup resume sits next to
+# backup creation, while diagnostic/selftest and advanced CLI help stay
+# available as command-line subcommands rather than interactive menu entries.
+menu_layout.install()
+
 # A blank ENTER at the top-level menu must not silently choose item 1.  Rebuild
 # is destructive to the current in-memory index state and can take noticeable
 # time; requiring an explicit menu number also prevents an error -> ENTER ->
@@ -36,7 +50,7 @@ _original_menu_ask_choice = menu._ask_choice
 
 
 def _safe_menu_choice(prompt: str, allowed: set[str], *, default: str | None = None) -> str:
-    if prompt == "请选择功能" and default == "1":
+    if prompt == "请选择功能":
         default = None
     return _original_menu_ask_choice(prompt, allowed, default=default)
 
