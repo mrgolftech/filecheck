@@ -6,9 +6,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from filecheck import backup
-from filecheck.portable_everything import load_index_state
 
 from .scan_service import ScanResult
+from .settings_service import current_backup_root
 from .task_runner import TaskContext
 
 
@@ -39,9 +39,7 @@ class BackupResult:
 
 
 def suggested_destination() -> Optional[str]:
-    state = load_index_state(required=False) or {}
-    value = str(state.get("backup_root") or "").strip()
-    return value or None
+    return current_backup_root()
 
 
 def _source_paths(scan_result: ScanResult) -> List[str]:
@@ -65,7 +63,7 @@ def _source_paths(scan_result: ScanResult) -> List[str]:
 def _resolve_destination(value: str) -> Path:
     text = str(value or "").strip()
     if not text:
-        raise RuntimeError("请选择备份目标目录")
+        raise RuntimeError("尚未设置备份根目录，请先到“设置”中配置")
     destination = Path(text).expanduser().resolve()
     destination.mkdir(parents=True, exist_ok=True)
     if not destination.is_dir():
