@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import json
-import queue
-import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 import filecheck.gui.scan_service as scan_service
 from filecheck.gui.task_runner import TaskContext, TaskRunner
@@ -48,7 +48,7 @@ def test_task_runner_emits_log_and_success() -> None:
     assert success.payload == 42
 
 
-def test_scan_service_reuses_core_and_writes_outputs(tmp_path: Path, monkeypatch) -> None:
+def test_scan_service_reuses_core_and_writes_outputs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     rules_path = tmp_path / "rules.json"
     rules_path.write_text(
         json.dumps(
@@ -63,12 +63,14 @@ def test_scan_service_reuses_core_and_writes_outputs(tmp_path: Path, monkeypatch
     )
     scope = tmp_path / "scope"
     scope.mkdir()
+    backup_root = tmp_path / "backup"
     output = tmp_path / "scan-results.json"
     item_path = scope / "机密报告.txt"
     item_path.write_text("abc", encoding="utf-8")
 
     monkeypatch.setattr(scan_service.cli, "_default_rules_path", lambda: str(rules_path))
     monkeypatch.setattr(scan_service.cli, "_default_scan_output", lambda: str(output))
+    monkeypatch.setattr(scan_service, "current_backup_roots", lambda: [str(backup_root)])
     monkeypatch.setattr(
         scan_service,
         "load_index_state",
@@ -76,6 +78,7 @@ def test_scan_service_reuses_core_and_writes_outputs(tmp_path: Path, monkeypatch
             "selected_roots": [str(scope)],
             "excluded_roots": [],
             "index_mode": "portable-folder-index",
+            "updated_at": "test-index-v1",
         },
     )
     monkeypatch.setattr(
@@ -104,7 +107,7 @@ def test_scan_service_reuses_core_and_writes_outputs(tmp_path: Path, monkeypatch
 
     monkeypatch.setattr(scan_service, "scan_keywords", fake_scan_keywords)
     task = FakeTask()
-    result = scan_service.run_scan(scan_service.ScanRequest(path_prefix=str(scope), match_path=False), task)
+    result = scan_service.run_scan(scan_service.ScanRequest(), task)
 
     assert result.counts == {"total": 1, "high": 1, "sensitive": 0, "review": 0}
     assert result.total_size == 3
@@ -112,11 +115,27 @@ def test_scan_service_reuses_core_and_writes_outputs(tmp_path: Path, monkeypatch
     assert result.csv_path.is_file()
     assert captured["keywords"]["high"] == ["机密"]
     assert captured["extensions"] == ["txt", "pdf"]
-    assert captured["kwargs"]["path_prefix"] == str(scope.resolve())
+    assert captured["kwargs"]["path_prefix"] is None
     assert captured["kwargs"]["instance"] == "FileCheck"
+    assert str(backup_root) in captured["kwargs"]["exclude_roots"]
     payload = json.loads(output.read_text(encoding="utf-8"))
     assert payload["items"][0]["severity"] == "high"
+    assert payload["backup_roots"] == [str(backup_root)]
+    assert payload["path_filter"] is None
     assert any("关键词查询完成" in line for line in task.logs)
+
+
+def test_scan_rejects_missing_backup_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    rules_path = tmp_path / "rules.json"
+    rules_path.write_text(
+        json.dumps({"keywords": {"high": ["机密"]}, "extensions": ["txt"]}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(scan_service.cli, "_default_rules_path", lambda: str(rules_path))
+    monkeypatch.setattr(scan_service, "current_backup_roots", lambda: [])
+    monkeypatch.setattr(scan_service, "load_index_state", lambda required=True: {"selected_roots": [str(tmp_path)]})
+    with pytest.raises(RuntimeError, match="设置"):
+        scan_service.run_scan(scan_service.ScanRequest(), FakeTask())
 
 
 def test_scan_scope_must_be_inside_indexed_roots(tmp_path: Path) -> None:
