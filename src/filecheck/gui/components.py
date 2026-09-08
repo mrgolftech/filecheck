@@ -50,7 +50,7 @@ class PrimaryButton(ctk.CTkButton):
             corner_radius=Radius.CONTROL,
             fg_color=Palette.PRIMARY,
             hover_color=Palette.PRIMARY_HOVER,
-            text_color="#FFFFFF",
+            text_color=Palette.ON_PRIMARY,
             font=Typography.BODY_MEDIUM,
             **kwargs,
         )
@@ -84,7 +84,7 @@ class DangerButton(ctk.CTkButton):
             corner_radius=Radius.CONTROL,
             fg_color=Palette.DANGER,
             hover_color=Palette.DANGER_HOVER,
-            text_color="#FFFFFF",
+            text_color=Palette.ON_PRIMARY,
             font=Typography.BODY_MEDIUM,
             **kwargs,
         )
