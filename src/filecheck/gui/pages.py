@@ -5,6 +5,7 @@ from pathlib import Path
 import customtkinter as ctk
 
 from .components import Card, EmptyState, MetricCard, PageHeader, StatusPill
+from .path_widgets import FileLocationRow
 from .tokens import Layout, Palette, Radius, Spacing, Typography
 
 
@@ -60,14 +61,18 @@ class ResultPage(ctk.CTkFrame):
         )
         self.meta_label = ctk.CTkLabel(
             meta,
-            text="",
+            text="请人工核对 JSON/CSV 后再进入“备份”。",
             text_color=Palette.TEXT_SECONDARY,
             font=Typography.CAPTION,
             anchor="w",
             justify="left",
-            wraplength=850,
+            wraplength=620,
         )
-        self.meta_label.grid(row=1, column=0, sticky="ew", padx=Layout.CARD_PADDING, pady=(0, Layout.CARD_PADDING))
+        self.meta_label.grid(row=1, column=0, sticky="ew", padx=Layout.CARD_PADDING, pady=(0, Spacing.XS))
+        self.json_row = FileLocationRow(meta, "JSON")
+        self.json_row.grid(row=2, column=0, sticky="ew", padx=Layout.CARD_PADDING, pady=(Spacing.XS, 0))
+        self.csv_row = FileLocationRow(meta, "CSV")
+        self.csv_row.grid(row=3, column=0, sticky="ew", padx=Layout.CARD_PADDING, pady=(Spacing.XS, Layout.CARD_PADDING))
 
         list_card = Card(self.result_host)
         list_card.grid(row=2, column=0, sticky="nsew", pady=(Spacing.MD, 0))
@@ -91,6 +96,8 @@ class ResultPage(ctk.CTkFrame):
     def clear_result(self, message: str = "完成一次扫描后，这里将显示结果摘要和候选文件列表。") -> None:
         self.result_host.grid_remove()
         self.empty_state.grid()
+        self.json_row.clear()
+        self.csv_row.clear()
         labels = self.empty_state.winfo_children()
         if len(labels) >= 2:
             labels[0].configure(text="扫描结果已失效")
@@ -107,14 +114,10 @@ class ResultPage(ctk.CTkFrame):
         self.metric_size.set_value(_format_bytes(result.total_size))
 
         inaccessible = result.inaccessible_count
-        accessibility = f"\n注意：其中 {inaccessible} 个文件当前不可访问，整批备份会拒绝继续。" if inaccessible else ""
-        self.meta_label.configure(
-            text=(
-                f"JSON：{result.json_path}\n"
-                f"CSV：{result.csv_path}\n"
-                f"请人工核对 JSON/CSV 后再进入“备份”。{accessibility}"
-            )
-        )
+        accessibility = f"注意：其中 {inaccessible} 个文件当前不可访问，整批备份会拒绝继续。" if inaccessible else "请人工核对后再进入“备份”。"
+        self.meta_label.configure(text=accessibility, text_color=Palette.WARNING if inaccessible else Palette.TEXT_SECONDARY)
+        self.json_row.set_path(result.json_path)
+        self.csv_row.set_path(result.csv_path)
 
         for child in self.rows_host.winfo_children():
             child.destroy()
@@ -156,5 +159,5 @@ class ResultPage(ctk.CTkFrame):
                 font=Typography.SMALL,
                 anchor="w",
                 justify="left",
-                wraplength=700,
+                wraplength=620,
             ).grid(row=1, column=0, sticky="ew", pady=(Spacing.XXS, 0))
