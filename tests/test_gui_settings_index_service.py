@@ -26,7 +26,7 @@ class FakeTask:
             raise RuntimeError("cancelled")
 
 
-def test_settings_page_service_persists_backup_roots_rules_and_appearance(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def _rules_file(tmp_path: Path) -> Path:
     config_dir = tmp_path / "config"
     config_dir.mkdir()
     rules_path = config_dir / "rules.json"
@@ -41,10 +41,14 @@ def test_settings_page_service_persists_backup_roots_rules_and_appearance(tmp_pa
         ),
         encoding="utf-8",
     )
+    return rules_path
+
+
+def test_settings_service_persists_multiple_backup_roots_rules_and_appearance(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    rules_path = _rules_file(tmp_path)
     runtime = tmp_path / "runtime"
     monkeypatch.setattr(settings_service.cli, "_default_rules_path", lambda: str(rules_path))
     monkeypatch.setattr(settings_service, "runtime_dir", lambda: runtime)
-    monkeypatch.setattr(settings_service, "load_index_state", lambda required=False: None)
 
     backup_a = tmp_path / "backup-a"
     backup_b = tmp_path / "backup-b"
@@ -60,7 +64,6 @@ def test_settings_page_service_persists_backup_roots_rules_and_appearance(tmp_pa
     assert saved.appearance == "dark"
     assert saved.keywords["high"] == ["绝密"]
     assert saved.extensions == ["docx", "pdf"]
-    assert backup_a.is_dir() and backup_b.is_dir()
     persisted = json.loads(rules_path.read_text(encoding="utf-8"))
     assert persisted["keywords"]["review"] == ["方案"]
     assert persisted["extensions"] == ["docx", "pdf"]
@@ -69,18 +72,20 @@ def test_settings_page_service_persists_backup_roots_rules_and_appearance(tmp_pa
     assert runtime_payload["appearance"] == "dark"
 
 
-def test_current_backup_root_falls_back_to_existing_index_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    runtime = tmp_path / "runtime"
-    monkeypatch.setattr(settings_service, "runtime_dir", lambda: runtime)
-    monkeypatch.setattr(
-        settings_service,
-        "load_index_state",
-        lambda required=False: {"backup_root": r"H:\FileCheckBackup"},
-    )
-    assert settings_service.current_backup_root() == r"H:\FileCheckBackup"
+def test_backup_roots_require_explicit_settings_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings_service, "runtime_dir", lambda: tmp_path / "runtime")
+    assert settings_service.current_backup_roots() == []
+    assert settings_service.current_backup_root() is None
 
 
-def test_gui_index_service_uses_settings_and_reports_truthful_elapsed_progress(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_save_appearance_does_not_require_backup_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings_service, "runtime_dir", lambda: tmp_path / "runtime")
+    assert settings_service.save_appearance("dark") == "dark"
+    assert settings_service.current_appearance() == "dark"
+    assert settings_service.current_backup_roots() == []
+
+
+def test_gui_index_service_uses_all_backup_roots_and_truthful_elapsed_progress(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(index_service, "current_backup_roots", lambda: [r"H:\FileCheckBackup", r"I:\FileCheckBackup"])
     captured = {}
 
@@ -112,3 +117,9 @@ def test_gui_index_service_uses_settings_and_reports_truthful_elapsed_progress(m
     assert elapsed_updates
     assert all(value is None for value, _message in elapsed_updates)
     assert any("9 秒" in message for _value, message in elapsed_updates)
+
+
+def test_gui_index_service_rejects_missing_backup_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(index_service, "current_backup_roots", lambda: [])
+    with pytest.raises(RuntimeError, match="设置"):
+        index_service.run_index_build(["C:\\"], FakeTask())
