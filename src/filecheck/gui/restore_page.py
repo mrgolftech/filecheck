@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tkinter as tk
+from pathlib import Path
 from tkinter import filedialog
 
 import customtkinter as ctk
@@ -121,23 +122,11 @@ class RestorePage(ctk.CTkFrame):
 
         choices = ctk.CTkFrame(preflight_card, fg_color="transparent")
         choices.grid(row=1, column=0, sticky="ew", padx=Layout.CARD_PADDING)
-        self.skip_radio = self._radio(
-            choices,
-            "跳过已有文件（推荐）",
-            "skip",
-        )
+        self.skip_radio = self._radio(choices, "跳过已有文件（推荐）", "skip")
         self.skip_radio.pack(side="left")
-        self.rename_radio = self._radio(
-            choices,
-            "保留并重命名恢复",
-            "rename",
-        )
+        self.rename_radio = self._radio(choices, "保留并重命名恢复", "rename")
         self.rename_radio.pack(side="left", padx=(Spacing.LG, 0))
-        self.overwrite_radio = self._radio(
-            choices,
-            "覆盖已有文件",
-            "overwrite",
-        )
+        self.overwrite_radio = self._radio(choices, "覆盖已有文件", "overwrite")
         self.overwrite_radio.pack(side="left", padx=(Spacing.LG, 0))
 
         self.strategy_label = ctk.CTkLabel(
@@ -329,10 +318,7 @@ class RestorePage(ctk.CTkFrame):
         self._preflight = result
         self.metric_files.set_value(str(result.file_count))
         self.metric_size.set_value(_format_bytes(result.total_bytes))
-        self.metric_conflicts.set_value(
-            str(result.conflicts),
-            "warning" if result.conflicts else "success",
-        )
+        self.metric_conflicts.set_value(str(result.conflicts), "warning" if result.conflicts else "success")
         self.metric_action.set_value(f"{result.expected_restored}/{result.expected_skipped}")
         self.progress_bar.stop()
         self.progress_bar.configure(mode="determinate")
@@ -442,6 +428,21 @@ class RestorePage(ctk.CTkFrame):
     def _input_changed(self, *args) -> None:
         if self._busy:
             return
+        if self._info:
+            current = self.backup_path.get().strip()
+            try:
+                same_target = bool(current) and Path(current).expanduser().resolve() == self._info.backup_path
+            except (OSError, RuntimeError):
+                same_target = False
+            if not same_target:
+                self._info = None
+                self._preflight = None
+                self.state_pill.set_tone("neutral", "需要重新载入")
+                self.target_label.configure(
+                    text="备份路径已经变化，请重新点击“载入备份”后再执行恢复预检。",
+                    text_color=Palette.WARNING,
+                )
+                self._reset_metrics()
         self._invalidate_preflight()
         mode = self.conflict.get()
         descriptions = {
