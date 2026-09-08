@@ -8,6 +8,8 @@ import customtkinter as ctk
 from .backup_page import BackupPage
 from .backup_service import BackupPreflight, BackupRequest, BackupResult, preflight_backup, run_backup, suggested_destination
 from .components import SidebarButton, StatusPill
+from .home_page import HomePage
+from .index_service import IndexBuildResult, load_index_context, run_index_build
 from .migration_page import MigrationPage
 from .migration_service import (
     RemovalPreflight,
@@ -17,16 +19,13 @@ from .migration_service import (
     run_resume_removal,
     run_source_removal,
 )
-from .pages import HomePage, ResultPage, ScanPage, SettingsPage
+from .pages import ResultPage
 from .restore_page import RestorePage
-from .restore_service import (
-    RestorePreflight,
-    RestoreResult,
-    inspect_restore_target,
-    run_restore,
-    run_restore_preflight,
-)
+from .restore_service import RestorePreflight, RestoreResult, inspect_restore_target, run_restore, run_restore_preflight
+from .scan_page import ScanPage
 from .scan_service import ScanRequest, ScanResult, load_context, run_scan
+from .settings_page import SettingsPage
+from .settings_service import load_settings, save_settings
 from .task_runner import TaskEvent, TaskRunner
 from .tokens import Layout, Palette, Spacing, Typography
 
@@ -36,8 +35,8 @@ class FileCheckApp(ctk.CTk):
         "home": "首页",
         "scan": "扫描",
         "results": "扫描结果",
-        "backup": "备份与迁出",
-        "migration": "源文件处理",
+        "backup": "备份",
+        "migration": "源文件删除",
         "restore": "恢复",
         "settings": "设置",
     }
@@ -64,8 +63,7 @@ class FileCheckApp(ctk.CTk):
 
         self._build_sidebar()
         self._build_content()
-        self._refresh_scan_context()
-        self._refresh_backup_context()
+        self._refresh_all_contexts()
         self.show_page("home")
         self.after(100, self._poll_task_events)
 
@@ -82,13 +80,7 @@ class FileCheckApp(ctk.CTk):
         sidebar.grid_rowconfigure(8, weight=1)
         brand = ctk.CTkFrame(sidebar, fg_color="transparent")
         brand.grid(row=0, column=0, sticky="ew", padx=Spacing.LG, pady=(Spacing.LG, Spacing.XL))
-        ctk.CTkLabel(
-            brand,
-            text="FileCheck",
-            text_color=Palette.TEXT,
-            font=Typography.SECTION_TITLE,
-            anchor="w",
-        ).pack(anchor="w")
+        ctk.CTkLabel(brand, text="FileCheck", text_color=Palette.TEXT, font=Typography.SECTION_TITLE, anchor="w").pack(anchor="w")
         ctk.CTkLabel(
             brand,
             text="文件检查与备份工具",
@@ -100,14 +92,23 @@ class FileCheckApp(ctk.CTk):
             button = SidebarButton(sidebar, title, command=lambda page=name: self.show_page(page))
             button.grid(row=row, column=0, sticky="ew", padx=Spacing.SM, pady=Spacing.XXS)
             self._nav_buttons[name] = button
+
         footer = ctk.CTkFrame(sidebar, fg_color="transparent")
         footer.grid(row=9, column=0, sticky="sew", padx=Spacing.LG, pady=Spacing.LG)
         ctk.CTkLabel(
             footer,
-            text="GUI v0.1 · 扫描 / 备份 / 删除 / 恢复",
+            text="FileCheckV0.1",
+            text_color=Palette.TEXT_SECONDARY,
+            font=Typography.SMALL,
+            anchor="w",
+        ).pack(anchor="w")
+        ctk.CTkLabel(
+            footer,
+            text="Design By David @ 2026",
             text_color=Palette.TEXT_MUTED,
             font=Typography.SMALL,
-        ).pack(anchor="w")
+            anchor="w",
+        ).pack(anchor="w", pady=(Spacing.XXS, 0))
 
     def _build_content(self) -> None:
         self.content = ctk.CTkFrame(self, fg_color=Palette.BG, corner_radius=0)
@@ -115,20 +116,27 @@ class FileCheckApp(ctk.CTk):
         self.content.grid_rowconfigure(0, weight=1)
         self.content.grid_columnconfigure(0, weight=1)
         page_host = ctk.CTkFrame(self.content, fg_color="transparent", corner_radius=0)
-        page_host.grid(
-            row=0,
-            column=0,
-            sticky="nsew",
-            padx=Layout.PAGE_PADDING,
-            pady=(Layout.PAGE_PADDING, Spacing.MD),
-        )
+        page_host.grid(row=0, column=0, sticky="nsew", padx=Layout.PAGE_PADDING, pady=(Layout.PAGE_PADDING, Spacing.MD))
         page_host.grid_rowconfigure(0, weight=1)
         page_host.grid_columnconfigure(0, weight=1)
+
         self._pages = {
             "home": HomePage(page_host, self.show_page),
-            "scan": ScanPage(page_host, self._start_scan, self._cancel_task),
+            "scan": ScanPage(
+                page_host,
+                self._start_index_build,
+                self._start_scan,
+                self._cancel_task,
+                lambda: self.show_page("settings"),
+            ),
             "results": ResultPage(page_host),
-            "backup": BackupPage(page_host, self._start_backup_preflight, self._start_backup, self._cancel_task),
+            "backup": BackupPage(
+                page_host,
+                self._start_backup_preflight,
+                self._start_backup,
+                self._cancel_task,
+                lambda: self.show_page("settings"),
+            ),
             "migration": MigrationPage(
                 page_host,
                 self._load_removal_target,
@@ -144,7 +152,7 @@ class FileCheckApp(ctk.CTk):
                 self._start_restore,
                 self._cancel_task,
             ),
-            "settings": SettingsPage(page_host),
+            "settings": SettingsPage(page_host, self._save_settings),
         }
         for page in self._pages.values():
             page.grid(row=0, column=0, sticky="nsew")
@@ -164,16 +172,29 @@ class FileCheckApp(ctk.CTk):
         self.status_pill = StatusPill(status_bar, "就绪", tone="success")
         self.status_pill.grid(row=0, column=1, sticky="e")
 
+    def _refresh_all_contexts(self) -> None:
+        self._refresh_settings_context()
+        self._refresh_scan_context()
+        self._refresh_backup_context()
+        self._refresh_home_context()
+
+    def _refresh_settings_context(self) -> None:
+        page = self._pages.get("settings")
+        if not isinstance(page, SettingsPage):
+            return
+        try:
+            page.set_values(load_settings())
+        except Exception as exc:
+            page.save_error(f"设置读取失败：{exc}")
+
     def _refresh_scan_context(self) -> None:
         page = self._pages.get("scan")
         if not isinstance(page, ScanPage):
             return
         try:
-            page.set_context(load_context())
+            page.set_context(load_context(), load_index_context())
         except Exception as exc:
-            page.index_label.configure(text=f"扫描基线读取失败：{exc}", text_color=Palette.DANGER)
-            page.rules_label.configure(text="请检查 config/rules.json 和运行目录。")
-            page.extensions_label.configure(text="")
+            page.finish_error(f"扫描环境读取失败：{exc}")
 
     def _refresh_backup_context(self) -> None:
         page = self._pages.get("backup")
@@ -181,22 +202,72 @@ class FileCheckApp(ctk.CTk):
             try:
                 page.set_suggested_destination(suggested_destination())
             except Exception:
-                pass
+                page.set_suggested_destination(None)
+
+    def _refresh_home_context(self) -> None:
+        page = self._pages.get("home")
+        if not isinstance(page, HomePage):
+            return
+        try:
+            settings = load_settings()
+            index = load_index_context()
+            page.set_context(
+                settings.backup_root or None,
+                index.selected_roots,
+                sum(len(values) for values in settings.keywords.values()),
+                len(settings.extensions),
+            )
+        except Exception:
+            pass
+
+    def _save_settings(self, backup_root, keywords, extensions) -> None:
+        page = self._pages.get("settings")
+        if not isinstance(page, SettingsPage):
+            return
+        try:
+            data = save_settings(backup_root, keywords, extensions)
+        except Exception as exc:
+            page.save_error(str(exc))
+            self.set_status(f"设置保存失败：{exc}", "danger")
+            return
+        page.saved(data)
+        self._last_backup_preflight = None
+        self._refresh_scan_context()
+        self._refresh_backup_context()
+        self._refresh_home_context()
+        self.set_status("设置已保存；若备份目录发生变化，建议重新创建索引", "success")
 
     def _busy(self) -> bool:
         return self._task_runner.busy or self._active_task is not None
 
-    def _start_scan(self, scope, match_path: bool) -> None:
+    def _start_index_build(self, selected_roots) -> None:
+        page = self._pages.get("scan")
+        if not isinstance(page, ScanPage):
+            return
+        if self._busy():
+            self.set_status("已有后台任务正在运行", "warning")
+            return
+        if not selected_roots:
+            page.finish_error("请至少选择一个需要扫描的磁盘")
+            self.set_status("请选择需要扫描的磁盘", "warning")
+            return
+        self._active_task = "index"
+        if not self._task_runner.start("创建索引", lambda task: run_index_build(list(selected_roots), task)):
+            self._active_task = None
+            return
+        page.begin_index()
+        self.set_status("正在创建 FileCheck 专用索引", "info")
+
+    def _start_scan(self) -> None:
         page = self._pages.get("scan")
         if not isinstance(page, ScanPage) or self._busy():
             self.set_status("已有后台任务正在运行", "warning")
             return
-        request = ScanRequest(path_prefix=scope, match_path=match_path)
         self._active_task = "scan"
-        if not self._task_runner.start("扫描", lambda task: run_scan(request, task)):
+        if not self._task_runner.start("扫描", lambda task: run_scan(ScanRequest(), task)):
             self._active_task = None
             return
-        page.begin_task()
+        page.begin_scan()
         self.set_status("扫描任务正在后台运行", "info")
 
     def _start_backup_preflight(self, destination: str) -> None:
@@ -287,7 +358,7 @@ class FileCheckApp(ctk.CTk):
             self._active_task = None
             return
         page.begin_removal(False)
-        self.set_status("正在安全处理源文件", "info")
+        self.set_status("正在安全删除源文件", "info")
 
     def _resume_removal(self, value: str) -> None:
         page = self._pages.get("migration")
@@ -296,11 +367,11 @@ class FileCheckApp(ctk.CTk):
             return
         self._last_removal_preflight = None
         self._active_task = "removal_resume"
-        if not self._task_runner.start("继续源文件处理", lambda task: run_resume_removal(value, task)):
+        if not self._task_runner.start("继续源文件删除", lambda task: run_resume_removal(value, task)):
             self._active_task = None
             return
         page.begin_removal(True)
-        self.set_status("正在继续源文件处理", "info")
+        self.set_status("正在继续源文件删除", "info")
 
     def _load_restore_target(self, value: str, quiet: bool = False) -> None:
         page = self._pages.get("restore")
@@ -325,10 +396,7 @@ class FileCheckApp(ctk.CTk):
             return
         self._last_restore_preflight = None
         self._active_task = "restore_preflight"
-        if not self._task_runner.start(
-            "恢复预检",
-            lambda task: run_restore_preflight(value, conflict, task),
-        ):
+        if not self._task_runner.start("恢复预检", lambda task: run_restore_preflight(value, conflict, task)):
             self._active_task = None
             return
         page.begin_preflight()
@@ -343,10 +411,7 @@ class FileCheckApp(ctk.CTk):
             self.set_status("已有后台任务正在运行", "warning")
             return
         resolved = Path(value).expanduser().resolve()
-        if (
-            resolved != self._last_restore_preflight.backup_path
-            or conflict != self._last_restore_preflight.conflict
-        ):
+        if resolved != self._last_restore_preflight.backup_path or conflict != self._last_restore_preflight.conflict:
             self._last_restore_preflight = None
             page.finish_error("恢复备份或冲突策略已变化，请重新执行恢复预检")
             return
@@ -378,12 +443,13 @@ class FileCheckApp(ctk.CTk):
 
         if event.kind == "started":
             labels = {
+                "index": "索引创建正在执行",
                 "scan": "扫描任务正在执行",
                 "backup_preflight": "备份预检正在执行",
                 "backup": "备份任务正在执行",
                 "removal_preflight": "删除前安全复核正在执行",
                 "removal": "源文件删除正在执行",
-                "removal_resume": "源文件继续处理正在执行",
+                "removal_resume": "源文件继续删除正在执行",
                 "restore_preflight": "恢复预检正在执行",
                 "restore": "文件恢复正在执行",
             }
@@ -391,7 +457,7 @@ class FileCheckApp(ctk.CTk):
             return
 
         if event.kind == "log":
-            if active == "scan" and isinstance(scan_page, ScanPage):
+            if active in ("index", "scan") and isinstance(scan_page, ScanPage):
                 scan_page.append_log(event.message)
             elif active in ("backup_preflight", "backup") and isinstance(backup_page, BackupPage):
                 backup_page.append_log(event.message)
@@ -402,7 +468,7 @@ class FileCheckApp(ctk.CTk):
             return
 
         if event.kind == "progress":
-            if active == "scan" and isinstance(scan_page, ScanPage):
+            if active in ("index", "scan") and isinstance(scan_page, ScanPage):
                 scan_page.update_progress(event.progress, event.message)
             elif active in ("backup_preflight", "backup") and isinstance(backup_page, BackupPage):
                 backup_page.update_progress(event.progress, event.message)
@@ -413,12 +479,18 @@ class FileCheckApp(ctk.CTk):
             return
 
         if event.kind == "success":
-            if active == "scan" and isinstance(event.payload, ScanResult):
+            if active == "index" and isinstance(event.payload, IndexBuildResult):
+                if isinstance(scan_page, ScanPage):
+                    scan_page.finish_index(event.payload)
+                self._refresh_scan_context()
+                self._refresh_home_context()
+                self.set_status(f"索引创建完成：{'、'.join(event.payload.selected_roots)}", "success")
+            elif active == "scan" and isinstance(event.payload, ScanResult):
                 result = event.payload
                 self._last_scan_result = result
                 self._last_backup_preflight = None
                 if isinstance(scan_page, ScanPage):
-                    scan_page.finish_success(result.counts.get("total", 0))
+                    scan_page.finish_scan(result.counts.get("total", 0))
                 result_page = self._pages.get("results")
                 if isinstance(result_page, ResultPage):
                     result_page.set_result(result)
@@ -454,10 +526,7 @@ class FileCheckApp(ctk.CTk):
                     migration_page.finish_result(event.payload)
                     self._load_removal_target(str(event.payload.backup_path), quiet=True)
                 tone = "success" if event.payload.status == "completed" else "warning"
-                self.set_status(
-                    f"源文件处理：deleted={event.payload.deleted}, failed={event.payload.failed}",
-                    tone,
-                )
+                self.set_status(f"源文件删除：deleted={event.payload.deleted}, failed={event.payload.failed}", tone)
             elif active == "restore_preflight" and isinstance(event.payload, RestorePreflight):
                 self._last_restore_preflight = event.payload
                 if isinstance(restore_page, RestorePage):
@@ -470,16 +539,14 @@ class FileCheckApp(ctk.CTk):
                 self._last_restore_preflight = None
                 if isinstance(restore_page, RestorePage):
                     restore_page.finish_result(event.payload)
-                self.set_status(
-                    f"恢复完成：restored={event.payload.restored}, skipped={event.payload.skipped}",
-                    "success",
-                )
+                self.set_status(f"恢复完成：restored={event.payload.restored}, skipped={event.payload.skipped}", "success")
             self._active_task = None
             return
 
         if event.kind == "cancelled":
-            if active == "scan" and isinstance(scan_page, ScanPage):
+            if active in ("index", "scan") and isinstance(scan_page, ScanPage):
                 scan_page.finish_cancelled()
+                self._refresh_scan_context()
             elif active in ("backup_preflight", "backup") and isinstance(backup_page, BackupPage):
                 backup_page.finish_cancelled()
                 self._last_backup_preflight = None
@@ -498,8 +565,9 @@ class FileCheckApp(ctk.CTk):
 
         if event.kind == "error":
             message = event.message or "未知错误"
-            if active == "scan" and isinstance(scan_page, ScanPage):
+            if active in ("index", "scan") and isinstance(scan_page, ScanPage):
                 scan_page.finish_error(message)
+                self._refresh_scan_context()
             elif active in ("backup_preflight", "backup") and isinstance(backup_page, BackupPage):
                 backup_page.finish_error(message)
                 self._last_backup_preflight = None
@@ -518,6 +586,14 @@ class FileCheckApp(ctk.CTk):
     def show_page(self, name: str) -> None:
         if name not in self._pages:
             return
+        if name == "home":
+            self._refresh_home_context()
+        elif name == "scan":
+            self._refresh_scan_context()
+        elif name == "backup":
+            self._refresh_backup_context()
+        elif name == "settings":
+            self._refresh_settings_context()
         for page_name, page in self._pages.items():
             if page_name == name:
                 page.grid()
@@ -530,13 +606,7 @@ class FileCheckApp(ctk.CTk):
 
     def set_status(self, message: str, tone: str = "neutral") -> None:
         self.status_text.configure(text=message)
-        labels = {
-            "neutral": "就绪",
-            "info": "执行中",
-            "success": "完成",
-            "warning": "注意",
-            "danger": "异常",
-        }
+        labels = {"neutral": "就绪", "info": "执行中", "success": "完成", "warning": "注意", "danger": "异常"}
         self.status_pill.set_tone(tone, labels.get(tone, "就绪"))
 
 
