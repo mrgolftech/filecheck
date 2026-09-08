@@ -25,6 +25,7 @@ class BackupPage(ctk.CTkFrame):
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(3, weight=1)
         self.destination = tk.StringVar(value="")
+        self._destinations = []
         self._on_preflight = on_preflight
         self._on_start_backup = on_start_backup
         self._on_cancel = on_cancel
@@ -36,7 +37,7 @@ class BackupPage(ctk.CTkFrame):
         PageHeader(
             self,
             "备份",
-            "备份当前扫描结果到“设置”中指定的统一目录；执行前先核对扫描摘要和空间条件。",
+            "备份当前扫描结果到“设置”中指定的目录；执行前先核对扫描摘要、目标目录和空间条件。",
         ).grid(row=0, column=0, sticky="ew")
 
         source_card = Card(self)
@@ -62,9 +63,10 @@ class BackupPage(ctk.CTkFrame):
         target_card = Card(self)
         target_card.grid(row=2, column=0, sticky="ew", pady=(Spacing.MD, 0))
         target_card.grid_columnconfigure(0, weight=1)
-        ctk.CTkLabel(target_card, text="备份目录与预检", text_color=Palette.TEXT, font=Typography.CARD_TITLE, anchor="w").grid(
-            row=0, column=0, columnspan=2, sticky="w", padx=Layout.CARD_PADDING, pady=(Layout.CARD_PADDING, Spacing.SM)
+        ctk.CTkLabel(target_card, text="备份目标与预检", text_color=Palette.TEXT, font=Typography.CARD_TITLE, anchor="w").grid(
+            row=0, column=0, columnspan=3, sticky="w", padx=Layout.CARD_PADDING, pady=(Layout.CARD_PADDING, Spacing.SM)
         )
+
         self.destination_label = ctk.CTkLabel(
             target_card,
             text="备份目录：未设置",
@@ -72,16 +74,38 @@ class BackupPage(ctk.CTkFrame):
             font=Typography.BODY_MEDIUM,
             anchor="w",
             justify="left",
-            wraplength=760,
+            wraplength=650,
         )
         self.destination_label.grid(row=1, column=0, sticky="ew", padx=Layout.CARD_PADDING)
+
+        self.destination_menu = ctk.CTkOptionMenu(
+            target_card,
+            variable=self.destination,
+            values=[""],
+            command=self._destination_changed,
+            height=Layout.CONTROL_HEIGHT,
+            corner_radius=Radius.CONTROL,
+            fg_color=Palette.SURFACE_SUBTLE,
+            button_color=Palette.PRIMARY,
+            button_hover_color=Palette.PRIMARY_HOVER,
+            text_color=Palette.TEXT,
+            dropdown_fg_color=Palette.SURFACE,
+            dropdown_text_color=Palette.TEXT,
+            dropdown_hover_color=Palette.PRIMARY_SOFT,
+            font=Typography.BODY,
+            dropdown_font=Typography.BODY,
+            width=360,
+        )
+        self.destination_menu.grid(row=1, column=1, padx=(Spacing.SM, 0))
+        self.destination_menu.grid_remove()
+
         if self._on_open_settings is not None:
-            SecondaryButton(target_card, "打开设置", command=self._on_open_settings, width=110).grid(
-                row=1, column=1, padx=(Spacing.SM, Layout.CARD_PADDING)
+            SecondaryButton(target_card, "打开设置", command=self._on_open_settings, width=105).grid(
+                row=1, column=2, padx=(Spacing.SM, Layout.CARD_PADDING)
             )
 
         metrics = ctk.CTkFrame(target_card, fg_color="transparent")
-        metrics.grid(row=2, column=0, columnspan=2, sticky="ew", padx=Layout.CARD_PADDING, pady=(Spacing.MD, 0))
+        metrics.grid(row=2, column=0, columnspan=3, sticky="ew", padx=Layout.CARD_PADDING, pady=(Spacing.MD, 0))
         for column in range(4):
             metrics.grid_columnconfigure(column, weight=1, uniform="backup_metric")
         self.metric_files = MetricCard(metrics, "文件数")
@@ -93,15 +117,15 @@ class BackupPage(ctk.CTkFrame):
 
         self.strategy_label = ctk.CTkLabel(
             target_card,
-            text="复制时计算 SHA-256，复制完成后对备份再次执行全量 SHA-256 校验；备份本身不会删除源文件。",
+            text="复制时计算 SHA-256，完成后再次全量校验；备份本身不会删除源文件。",
             text_color=Palette.TEXT_SECONDARY,
             font=Typography.SMALL,
             anchor="w",
             justify="left",
         )
-        self.strategy_label.grid(row=3, column=0, columnspan=2, sticky="ew", padx=Layout.CARD_PADDING, pady=(Spacing.SM, 0))
+        self.strategy_label.grid(row=3, column=0, columnspan=3, sticky="ew", padx=Layout.CARD_PADDING, pady=(Spacing.SM, 0))
         actions = ctk.CTkFrame(target_card, fg_color="transparent")
-        actions.grid(row=4, column=0, columnspan=2, sticky="w", padx=Layout.CARD_PADDING, pady=(Spacing.MD, Layout.CARD_PADDING))
+        actions.grid(row=4, column=0, columnspan=3, sticky="w", padx=Layout.CARD_PADDING, pady=(Spacing.MD, Layout.CARD_PADDING))
         self.preflight_button = SecondaryButton(actions, "检查备份条件", command=self._start_preflight, width=130, state="disabled")
         self.preflight_button.pack(side="left")
         self.start_button = PrimaryButton(actions, "开始备份", command=self._start_backup, width=130, state="disabled")
@@ -188,12 +212,34 @@ class BackupPage(ctk.CTkFrame):
         self._refresh_controls()
 
     def set_suggested_destination(self, value) -> None:
-        self.destination.set(str(value) if value else "")
-        if value:
-            self.destination_label.configure(text=f"备份目录：{value}", text_color=Palette.TEXT_SECONDARY)
+        if value is None:
+            values = []
+        elif isinstance(value, (list, tuple)):
+            values = [str(item) for item in value if str(item).strip()]
         else:
+            values = [str(value)]
+        self._destinations = values
+        if not values:
+            self.destination.set("")
+            self.destination_menu.grid_remove()
             self.destination_label.configure(text="备份目录：未设置，请先到“设置”中配置", text_color=Palette.WARNING)
+        elif len(values) == 1:
+            self.destination.set(values[0])
+            self.destination_menu.grid_remove()
+            self.destination_label.configure(text=f"备份目录：{values[0]}", text_color=Palette.TEXT_SECONDARY)
+        else:
+            if self.destination.get() not in values:
+                self.destination.set(values[0])
+            self.destination_menu.configure(values=values)
+            self.destination_menu.grid()
+            self.destination_label.configure(text=f"已配置 {len(values)} 个备份目录，请选择本次目标：", text_color=Palette.TEXT_SECONDARY)
         self._invalidate_preflight()
+        self._refresh_controls()
+
+    def _destination_changed(self, value: str) -> None:
+        self.destination.set(value)
+        self._invalidate_preflight()
+        self.result_label.configure(text="备份目标已变化，请重新执行空间预检。", text_color=Palette.WARNING)
         self._refresh_controls()
 
     def begin_preflight(self) -> None:
@@ -308,6 +354,7 @@ class BackupPage(ctk.CTkFrame):
         approved = self._approved_destination and self._approved_destination == self.destination.get().strip()
         self.start_button.configure(state="normal" if approved and not self._busy else "disabled")
         self.cancel_button.configure(state="normal" if self._busy else "disabled")
+        self.destination_menu.configure(state="disabled" if self._busy else "normal")
 
     def _start_preflight(self) -> None:
         self._on_preflight(self.destination.get().strip())
