@@ -2,12 +2,21 @@ from __future__ import annotations
 
 import ctypes
 import os
+import webbrowser
 from tkinter import messagebox
 
 import customtkinter as ctk
 
+from filecheck import __version__
+
 from .app import FileCheckApp
 from .settings_service import current_appearance
+from .tokens import Palette, Spacing, Typography
+
+
+REPOSITORY_URL = "https://github.com/mrgolftech/filecheck"
+PRODUCT_LABEL = f"FileCheck v{__version__}"
+DESIGN_CREDIT = "Designed by David © 2026"
 
 
 def is_windows_admin() -> bool:
@@ -32,6 +41,43 @@ def _invalidate_scan_basis(app: FileCheckApp, message: str) -> None:
         app.event_generate("<<FileCheckScanBasisChanged>>", when="tail")
     except Exception:
         pass
+
+
+def _walk_widgets(widget):
+    yield widget
+    for child in widget.winfo_children():
+        yield from _walk_widgets(child)
+
+
+def _apply_product_identity(app: FileCheckApp) -> None:
+    """Keep visible version/credit in sync with the packaged FileCheck version."""
+    app.title(f"{PRODUCT_LABEL} 文件检查与备份工具")
+    footer = None
+    for widget in _walk_widgets(app):
+        if not isinstance(widget, ctk.CTkLabel):
+            continue
+        try:
+            text = str(widget.cget("text"))
+        except Exception:
+            continue
+        if text == "FileCheckV0.1":
+            widget.configure(text=PRODUCT_LABEL)
+            footer = widget.master
+        elif text == "Design By David @ 2026":
+            widget.configure(text=DESIGN_CREDIT)
+            footer = widget.master
+    if footer is None:
+        return
+    repository_label = ctk.CTkLabel(
+        footer,
+        text="github.com/mrgolftech/filecheck",
+        text_color=Palette.PRIMARY,
+        font=Typography.SMALL,
+        anchor="w",
+        cursor="hand2",
+    )
+    repository_label.pack(anchor="w", pady=(Spacing.XXS, 0))
+    repository_label.bind("<Button-1>", lambda _event: webbrowser.open_new_tab(REPOSITORY_URL))
 
 
 def _install_runtime_policy(is_admin: bool) -> None:
@@ -112,6 +158,7 @@ def create_app() -> FileCheckApp:
     admin = is_windows_admin()
     _install_runtime_policy(admin)
     app = FileCheckApp()
+    _apply_product_identity(app)
     ctk.set_appearance_mode(current_appearance())
     app._filecheck_is_admin = admin
     base_title = app.title()
