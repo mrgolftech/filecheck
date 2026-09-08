@@ -31,7 +31,11 @@ def _is_windows_admin() -> bool:
 
 
 def _require_admin_for_interactive_start(argv: list[str]) -> bool:
-    """Guard the double-click/menu workflow before any indexing or file operation."""
+    """Guard the normal double-click/menu workflow before file operations.
+
+    Advanced subcommands (for example ``--help`` and ``selftest``) stay callable
+    without elevation so diagnostics and CI can still run headlessly.
+    """
     if argv or os.name != "nt" or _is_windows_admin():
         return True
 
