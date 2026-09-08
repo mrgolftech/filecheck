@@ -15,6 +15,7 @@ from .components import (
     SecondaryButton,
     StatusPill,
 )
+from .path_widgets import FileLocationRow
 from .tokens import Layout, Palette, Radius, Spacing, Typography
 
 
@@ -71,9 +72,12 @@ class MigrationPage(ctk.CTkFrame):
             font=Typography.CAPTION,
             anchor="w",
             justify="left",
-            wraplength=820,
+            wraplength=620,
         )
-        self.target_label.grid(row=2, column=0, columnspan=2, sticky="ew", padx=Layout.CARD_PADDING, pady=(Spacing.SM, Layout.CARD_PADDING))
+        self.target_label.grid(row=2, column=0, columnspan=2, sticky="ew", padx=Layout.CARD_PADDING, pady=(Spacing.SM, Spacing.XS))
+        self.state_file_row = FileLocationRow(target_card, "删除状态")
+        self.state_file_row.grid(row=3, column=0, columnspan=2, sticky="ew", padx=Layout.CARD_PADDING, pady=(0, Layout.CARD_PADDING))
+        self.state_file_row.grid_remove()
 
         safety_card = Card(self)
         safety_card.grid(row=2, column=0, sticky="ew", pady=(Spacing.MD, 0))
@@ -98,7 +102,7 @@ class MigrationPage(ctk.CTkFrame):
             font=Typography.SMALL,
             anchor="w",
             justify="left",
-            wraplength=820,
+            wraplength=620,
         )
         self.safety_label.grid(row=2, column=0, sticky="ew", padx=Layout.CARD_PADDING, pady=(Spacing.SM, Spacing.MD))
         actions = ctk.CTkFrame(safety_card, fg_color="transparent")
@@ -115,7 +119,7 @@ class MigrationPage(ctk.CTkFrame):
         run_card = Card(self)
         run_card.grid(row=3, column=0, sticky="nsew", pady=(Spacing.MD, 0))
         run_card.grid_columnconfigure(0, weight=1)
-        run_card.grid_rowconfigure(3, weight=1)
+        run_card.grid_rowconfigure(4, weight=1)
         ctk.CTkLabel(run_card, text="执行状态", text_color=Palette.TEXT, font=Typography.CARD_TITLE, anchor="w").grid(
             row=0, column=0, sticky="w", padx=Layout.CARD_PADDING, pady=(Layout.CARD_PADDING, Spacing.SM)
         )
@@ -131,6 +135,9 @@ class MigrationPage(ctk.CTkFrame):
         )
         self.progress_bar.grid(row=2, column=0, sticky="ew", padx=Layout.CARD_PADDING, pady=(Spacing.XS, Spacing.SM))
         self.progress_bar.set(0)
+        self.failed_row = FileLocationRow(run_card, "未删除清单")
+        self.failed_row.grid(row=3, column=0, sticky="ew", padx=Layout.CARD_PADDING, pady=(0, Spacing.XS))
+        self.failed_row.grid_remove()
         self.log_box = ctk.CTkTextbox(
             run_card,
             fg_color=Palette.SURFACE_SUBTLE,
@@ -141,7 +148,7 @@ class MigrationPage(ctk.CTkFrame):
             wrap="word",
             height=120,
         )
-        self.log_box.grid(row=3, column=0, sticky="nsew", padx=Layout.CARD_PADDING, pady=(0, Layout.CARD_PADDING))
+        self.log_box.grid(row=4, column=0, sticky="nsew", padx=Layout.CARD_PADDING, pady=(0, Layout.CARD_PADDING))
         self.log_box.configure(state="disabled")
         self.bind("<Map>", self._page_mapped, add="+")
         self.after_idle(self._refresh_batches)
@@ -164,6 +171,10 @@ class MigrationPage(ctk.CTkFrame):
         self.backup_path.set(text)
         self._info = None
         self._preflight = None
+        self.state_file_row.grid_remove()
+        self.state_file_row.clear()
+        self.failed_row.grid_remove()
+        self.failed_row.clear()
         if text:
             self.batch_selector.refresh(preferred=text, auto_load=False)
         self._refresh_controls()
@@ -177,21 +188,27 @@ class MigrationPage(ctk.CTkFrame):
         self.metric_size.set_value(_format_bytes(info.total_bytes))
         self.metric_deleted.set_value(str(info.deleted), "success")
         self.metric_failed.set_value(str(info.failed + info.pending), "danger" if info.failed or info.pending else "success")
+        self.state_file_row.grid_remove()
+        self.state_file_row.clear()
+        self.failed_row.grid_remove()
+        self.failed_row.clear()
         if not info.has_state:
             self.state_pill.set_tone("info", "待安全复核")
-            self.target_label.configure(text=f"批次：{info.batch_id}\n目录：{info.backup_path}\n尚未创建 source-removal.json；当前未删除任何源文件。")
+            self.target_label.configure(text=f"批次：{info.batch_id}\n尚未创建删除状态文件；当前未删除任何源文件。")
             self.safety_label.configure(
                 text="下一步会先再次验证备份，并对 manifest 中全部源文件重新计算 SHA-256。任何不一致都会阻止整批删除。",
                 text_color=Palette.TEXT_SECONDARY,
             )
         elif info.status == "completed":
             self.state_pill.set_tone("success", "删除完成")
-            self.target_label.configure(text=f"批次：{info.batch_id}\n目录：{info.backup_path}\n删除状态：{info.state_path}")
+            self.target_label.configure(text=f"批次：{info.batch_id}\n源文件删除已经完成。")
             self.safety_label.configure(text="该批次源文件删除已经完成。", text_color=Palette.SUCCESS)
+            self.state_file_row.set_path(info.state_path)
+            self.state_file_row.grid()
         else:
             tone = "danger" if info.failed else "warning"
             self.state_pill.set_tone(tone, "存在未完成项")
-            self.target_label.configure(text=f"批次：{info.batch_id}\n目录：{info.backup_path}\n删除状态：{info.state_path}")
+            self.target_label.configure(text=f"批次：{info.batch_id}\n已有删除状态，可继续处理未完成项。")
             self.safety_label.configure(
                 text=(
                     f"已有删除状态：已删除 {info.deleted}，已不存在 {info.already_absent}，"
@@ -199,6 +216,11 @@ class MigrationPage(ctk.CTkFrame):
                 ),
                 text_color=Palette.WARNING,
             )
+            self.state_file_row.set_path(info.state_path)
+            self.state_file_row.grid()
+        if getattr(info, "failed_report", None):
+            self.failed_row.set_path(info.failed_report)
+            self.failed_row.grid()
         self._refresh_controls()
 
     def load_error(self, message: str) -> None:
@@ -212,6 +234,8 @@ class MigrationPage(ctk.CTkFrame):
         self._busy = True
         self._preflight = None
         self._clear_log()
+        self.failed_row.grid_remove()
+        self.failed_row.clear()
         self.progress_label.configure(text="正在验证备份并复核全部源文件……", text_color=Palette.PRIMARY)
         self.progress_bar.configure(mode="indeterminate")
         self.progress_bar.start()
@@ -234,6 +258,8 @@ class MigrationPage(ctk.CTkFrame):
     def begin_removal(self, resume: bool = False) -> None:
         self._busy = True
         self._clear_log()
+        self.failed_row.grid_remove()
+        self.failed_row.clear()
         self.progress_bar.stop()
         self.progress_bar.configure(mode="determinate")
         self.progress_bar.set(0)
@@ -267,6 +293,8 @@ class MigrationPage(ctk.CTkFrame):
             self.progress_label.configure(text="源文件删除已结束，但存在未完成项", text_color=Palette.WARNING)
             self.append_log(f"当前状态：deleted={result.deleted}, failed={result.failed}, pending={result.pending}")
             if result.failed_report:
+                self.failed_row.set_path(result.failed_report)
+                self.failed_row.grid()
                 self.append_log(f"未删除清单：{result.failed_report}")
         self._refresh_controls()
 
