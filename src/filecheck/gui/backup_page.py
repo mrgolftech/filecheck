@@ -152,6 +152,10 @@ class BackupPage(ctk.CTkFrame):
         )
         self.log_box.grid(row=4, column=0, sticky="nsew", padx=Layout.CARD_PADDING, pady=(0, Layout.CARD_PADDING))
         self.log_box.configure(state="disabled")
+        self.winfo_toplevel().bind("<<FileCheckScanBasisChanged>>", self._scan_basis_changed, add="+")
+
+    def _scan_basis_changed(self, _event=None) -> None:
+        self.clear_scan_result("扫描设置或索引已变化，旧候选已作废。请重新扫描后再备份。")
 
     def clear_scan_result(self, message: str = "扫描规则或索引已变化，请重新扫描后再备份。") -> None:
         self._scan_ready = False
