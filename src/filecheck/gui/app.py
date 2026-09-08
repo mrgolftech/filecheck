@@ -1,11 +1,21 @@
 from __future__ import annotations
 
-from typing import Dict
+from pathlib import Path
+from typing import Dict, Optional
 
 import customtkinter as ctk
 
+from .backup_page import BackupPage
+from .backup_service import (
+    BackupPreflight,
+    BackupRequest,
+    BackupResult,
+    preflight_backup,
+    run_backup,
+    suggested_destination,
+)
 from .components import SidebarButton, StatusPill
-from .pages import BackupPage, HomePage, RestorePage, ResultPage, ScanPage, SettingsPage
+from .pages import HomePage, RestorePage, ResultPage, ScanPage, SettingsPage
 from .scan_service import ScanRequest, ScanResult, load_context, run_scan
 from .task_runner import TaskEvent, TaskRunner
 from .tokens import Layout, Palette, Spacing, Typography
@@ -34,11 +44,15 @@ class FileCheckApp(ctk.CTk):
         self._nav_buttons: Dict[str, SidebarButton] = {}
         self._pages: Dict[str, ctk.CTkFrame] = {}
         self._task_runner = TaskRunner()
-        self._last_scan_result = None
+        self._active_task: Optional[str] = None
+        self._last_scan_result: Optional[ScanResult] = None
+        self._last_backup_preflight: Optional[BackupPreflight] = None
+        self._last_backup_result: Optional[BackupResult] = None
 
         self._build_sidebar()
         self._build_content()
         self._refresh_scan_context()
+        self._refresh_backup_context()
         self.show_page("home")
         self.after(100, self._poll_task_events)
 
@@ -74,9 +88,12 @@ class FileCheckApp(ctk.CTk):
 
         footer = ctk.CTkFrame(sidebar, fg_color="transparent")
         footer.grid(row=9, column=0, sticky="sew", padx=Spacing.LG, pady=Spacing.LG)
-        ctk.CTkLabel(footer, text="GUI v0.1 · 扫描闭环", text_color=Palette.TEXT_MUTED, font=Typography.SMALL).pack(
-            anchor="w"
-        )
+        ctk.CTkLabel(
+            footer,
+            text="GUI v0.1 · 扫描 + 备份闭环",
+            text_color=Palette.TEXT_MUTED,
+            font=Typography.SMALL,
+        ).pack(anchor="w")
 
     def _build_content(self) -> None:
         self.content = ctk.CTkFrame(self, fg_color=Palette.BG, corner_radius=0)
@@ -93,7 +110,12 @@ class FileCheckApp(ctk.CTk):
             "home": HomePage(page_host, self.show_page),
             "scan": ScanPage(page_host, self._start_scan, self._cancel_task),
             "results": ResultPage(page_host),
-            "backup": BackupPage(page_host, self.set_status),
+            "backup": BackupPage(
+                page_host,
+                self._start_backup_preflight,
+                self._start_backup,
+                self._cancel_task,
+            ),
             "restore": RestorePage(page_host, self.set_status),
             "settings": SettingsPage(page_host),
         }
@@ -126,21 +148,87 @@ class FileCheckApp(ctk.CTk):
             scan_page.rules_label.configure(text="请检查 config/rules.json 和运行目录。")
             scan_page.extensions_label.configure(text="")
 
+    def _refresh_backup_context(self) -> None:
+        backup_page = self._pages.get("backup")
+        if not isinstance(backup_page, BackupPage):
+            return
+        try:
+            backup_page.set_suggested_destination(suggested_destination())
+        except Exception:
+            return
+
     def _start_scan(self, scope, match_path: bool) -> None:
-        scan_page = self._pages["scan"]
+        scan_page = self._pages.get("scan")
         if not isinstance(scan_page, ScanPage):
             return
-        if self._task_runner.busy:
+        if self._task_runner.busy or self._active_task is not None:
             self.set_status("已有后台任务正在运行", "warning")
             return
 
         request = ScanRequest(path_prefix=scope, match_path=match_path)
+        self._active_task = "scan"
         started = self._task_runner.start("扫描", lambda task: run_scan(request, task))
         if not started:
+            self._active_task = None
             self.set_status("无法启动扫描：后台任务繁忙", "warning")
             return
         scan_page.begin_task()
         self.set_status("扫描任务正在后台运行", "info")
+
+    def _start_backup_preflight(self, destination: str) -> None:
+        backup_page = self._pages.get("backup")
+        if not isinstance(backup_page, BackupPage):
+            return
+        if self._last_scan_result is None:
+            self.set_status("请先完成一次扫描，再执行备份预检", "warning")
+            return
+        if self._task_runner.busy or self._active_task is not None:
+            self.set_status("已有后台任务正在运行", "warning")
+            return
+
+        request = BackupRequest(scan_result=self._last_scan_result, destination_root=destination)
+        self._last_backup_preflight = None
+        self._active_task = "backup_preflight"
+        started = self._task_runner.start("备份预检", lambda task: preflight_backup(request, task))
+        if not started:
+            self._active_task = None
+            self.set_status("无法启动备份预检：后台任务繁忙", "warning")
+            return
+        backup_page.begin_preflight()
+        self.set_status("正在检查备份条件", "info")
+
+    def _start_backup(self, destination: str) -> None:
+        backup_page = self._pages.get("backup")
+        if not isinstance(backup_page, BackupPage):
+            return
+        if self._last_scan_result is None or self._last_backup_preflight is None:
+            self.set_status("请先完成备份预检", "warning")
+            return
+        if self._task_runner.busy or self._active_task is not None:
+            self.set_status("已有后台任务正在运行", "warning")
+            return
+
+        try:
+            resolved_destination = Path(destination).expanduser().resolve()
+        except (OSError, RuntimeError) as exc:
+            backup_page.finish_error(str(exc))
+            self.set_status(f"备份目标无效：{exc}", "danger")
+            return
+        if resolved_destination != self._last_backup_preflight.destination_root:
+            self._last_backup_preflight = None
+            backup_page.finish_error("备份目标已变化，请重新执行预检")
+            self.set_status("备份目标已变化，请重新执行预检", "warning")
+            return
+
+        request = BackupRequest(scan_result=self._last_scan_result, destination_root=destination)
+        self._active_task = "backup"
+        started = self._task_runner.start("创建备份", lambda task: run_backup(request, task))
+        if not started:
+            self._active_task = None
+            self.set_status("无法启动备份：后台任务繁忙", "warning")
+            return
+        backup_page.begin_backup()
+        self.set_status("正在创建并校验备份", "info")
 
     def _cancel_task(self) -> None:
         if self._task_runner.busy:
@@ -155,33 +243,88 @@ class FileCheckApp(ctk.CTk):
             self.after(100, self._poll_task_events)
 
     def _handle_task_event(self, event: TaskEvent) -> None:
+        active = self._active_task
         scan_page = self._pages.get("scan")
-        if not isinstance(scan_page, ScanPage):
-            return
+        backup_page = self._pages.get("backup")
 
         if event.kind == "started":
-            self.set_status("扫描任务正在执行", "info")
-        elif event.kind == "log":
-            scan_page.append_log(event.message)
-        elif event.kind == "progress":
-            scan_page.update_progress(event.progress, event.message)
-        elif event.kind == "success":
-            result = event.payload
-            if isinstance(result, ScanResult):
+            labels = {
+                "scan": "扫描任务正在执行",
+                "backup_preflight": "备份预检正在执行",
+                "backup": "备份任务正在执行",
+            }
+            self.set_status(labels.get(active, "后台任务正在执行"), "info")
+            return
+
+        if event.kind == "log":
+            if active == "scan" and isinstance(scan_page, ScanPage):
+                scan_page.append_log(event.message)
+            elif active in ("backup_preflight", "backup") and isinstance(backup_page, BackupPage):
+                backup_page.append_log(event.message)
+            return
+
+        if event.kind == "progress":
+            if active == "scan" and isinstance(scan_page, ScanPage):
+                scan_page.update_progress(event.progress, event.message)
+            elif active in ("backup_preflight", "backup") and isinstance(backup_page, BackupPage):
+                backup_page.update_progress(event.progress, event.message)
+            return
+
+        if event.kind == "success":
+            if active == "scan" and isinstance(event.payload, ScanResult):
+                result = event.payload
                 self._last_scan_result = result
-                scan_page.finish_success(result.counts.get("total", 0))
+                self._last_backup_preflight = None
+                if isinstance(scan_page, ScanPage):
+                    scan_page.finish_success(result.counts.get("total", 0))
                 result_page = self._pages.get("results")
                 if isinstance(result_page, ResultPage):
                     result_page.set_result(result)
+                if isinstance(backup_page, BackupPage):
+                    backup_page.set_scan_result(result)
                 self.show_page("results")
                 self.set_status(f"扫描完成：{result.counts.get('total', 0)} 个候选文件", "success")
-        elif event.kind == "cancelled":
-            scan_page.finish_cancelled()
-            self.set_status("扫描任务已取消", "warning")
-        elif event.kind == "error":
+            elif active == "backup_preflight" and isinstance(event.payload, BackupPreflight):
+                self._last_backup_preflight = event.payload
+                if isinstance(backup_page, BackupPage):
+                    backup_page.finish_preflight(event.payload)
+                self.set_status(
+                    f"备份预检通过：{event.payload.file_count} 个文件，可开始备份",
+                    "success",
+                )
+            elif active == "backup" and isinstance(event.payload, BackupResult):
+                self._last_backup_result = event.payload
+                self._last_backup_preflight = None
+                if isinstance(backup_page, BackupPage):
+                    backup_page.finish_backup(event.payload)
+                self.set_status(
+                    f"备份完成并校验通过：{event.payload.file_count} 个文件",
+                    "success",
+                )
+            self._active_task = None
+            return
+
+        if event.kind == "cancelled":
+            if active == "scan" and isinstance(scan_page, ScanPage):
+                scan_page.finish_cancelled()
+                self.set_status("扫描任务已取消", "warning")
+            elif active in ("backup_preflight", "backup") and isinstance(backup_page, BackupPage):
+                backup_page.finish_cancelled()
+                self._last_backup_preflight = None
+                self.set_status("备份任务已安全取消", "warning")
+            self._active_task = None
+            return
+
+        if event.kind == "error":
             message = event.message or "未知错误"
-            scan_page.finish_error(message)
-            self.set_status(f"扫描失败：{message}", "danger")
+            if active == "scan" and isinstance(scan_page, ScanPage):
+                scan_page.finish_error(message)
+                self.set_status(f"扫描失败：{message}", "danger")
+            elif active in ("backup_preflight", "backup") and isinstance(backup_page, BackupPage):
+                backup_page.finish_error(message)
+                self._last_backup_preflight = None
+                self.set_status(f"备份失败：{message}", "danger")
+            self._active_task = None
 
     def show_page(self, name: str) -> None:
         if name not in self._pages:
