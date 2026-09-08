@@ -64,12 +64,12 @@ def run_index_build(selected_roots: List[str], task: TaskContext) -> IndexBuildR
     task.log("开始创建 FileCheck 专用 Everything 索引。")
     task.log("索引范围: " + "、".join(roots))
     task.log(f"备份目录将自动排除: {backup_root}")
-    task.set_progress(0.02, "正在配置专用 Everything 实例……")
+    task.set_progress(None, "正在配置专用 Everything 实例……")
 
-    def progress(value: float) -> None:
+    def progress(elapsed_seconds: float) -> None:
         task.raise_if_cancelled()
-        ratio = max(0.0, min(1.0, float(value)))
-        task.set_progress(0.05 + 0.90 * ratio, f"正在创建索引：{ratio * 100:.0f}%")
+        elapsed = max(0.0, float(elapsed_seconds))
+        task.set_progress(None, f"正在创建索引，已运行 {elapsed:.0f} 秒……")
 
     result: PortableIndexResult = configure_and_reindex(
         roots,
