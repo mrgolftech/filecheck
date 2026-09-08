@@ -99,7 +99,8 @@ def run_scan(request: ScanRequest, task: TaskContext) -> ScanResult:
 
     selected_roots = [str(value) for value in state.get("selected_roots", [])]
     exclusions = [str(value) for value in state.get("excluded_roots", [])]
-    for extra in (str(program_dir()), current_backup_root()):
+    backup_root = current_backup_root()
+    for extra in (str(program_dir()), backup_root):
         if extra and extra not in exclusions:
             exclusions.append(extra)
     scope = _validate_scope(request.path_prefix, selected_roots)
@@ -139,6 +140,8 @@ def run_scan(request: ScanRequest, task: TaskContext) -> ScanResult:
         "everything_version": status.everything_version,
         "selected_roots": selected_roots,
         "excluded_roots": exclusions,
+        "index_updated_at": state.get("updated_at"),
+        "backup_root": backup_root,
         "match_path": bool(request.match_path),
         "path_filter": scope,
         "rules": cli._rules_metadata(rules_path),
