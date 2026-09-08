@@ -46,6 +46,11 @@ class TaskRunner:
     Worker functions receive a TaskContext and must never touch Tk widgets.
     UI code polls ``drain_events`` from ``after()`` and applies changes on the
     main thread.
+
+    Cancellation is cooperative: workers must call ``raise_if_cancelled`` at
+    safe checkpoints. Once a worker has durably completed and returned, the
+    result is reported as success even if a late cancel click races with that
+    return. This avoids reporting a completed backup as cancelled.
     """
 
     def __init__(self) -> None:
@@ -90,7 +95,6 @@ class TaskRunner:
         context.emit("started", message=name)
         try:
             result = worker(context)
-            context.raise_if_cancelled()
         except TaskCancelled as exc:
             context.emit("cancelled", message=str(exc))
         except Exception as exc:
