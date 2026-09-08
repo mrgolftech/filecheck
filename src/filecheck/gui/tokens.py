@@ -2,30 +2,32 @@ from __future__ import annotations
 
 
 class Palette:
-    PRIMARY = "#2563EB"
-    PRIMARY_HOVER = "#1D4ED8"
-    PRIMARY_SOFT = "#EFF6FF"
-    ON_PRIMARY = "#FFFFFF"
+    # CustomTkinter accepts (light, dark) tuples. Keep the FileCheck blue brand
+    # in both modes while adapting surfaces/text for a true dark appearance.
+    PRIMARY = ("#2563EB", "#3B82F6")
+    PRIMARY_HOVER = ("#1D4ED8", "#60A5FA")
+    PRIMARY_SOFT = ("#EFF6FF", "#172554")
+    ON_PRIMARY = ("#FFFFFF", "#FFFFFF")
 
-    BG = "#F4F7FB"
-    SURFACE = "#FFFFFF"
-    SURFACE_SUBTLE = "#F8FAFC"
-    BORDER = "#E2E8F0"
+    BG = ("#F4F7FB", "#0F172A")
+    SURFACE = ("#FFFFFF", "#182235")
+    SURFACE_SUBTLE = ("#F8FAFC", "#111827")
+    BORDER = ("#E2E8F0", "#334155")
 
-    TEXT = "#0F172A"
-    TEXT_SECONDARY = "#475569"
-    TEXT_MUTED = "#94A3B8"
+    TEXT = ("#0F172A", "#F8FAFC")
+    TEXT_SECONDARY = ("#475569", "#CBD5E1")
+    TEXT_MUTED = ("#94A3B8", "#94A3B8")
 
-    SUCCESS = "#15803D"
-    SUCCESS_SOFT = "#F0FDF4"
-    WARNING = "#B45309"
-    WARNING_SOFT = "#FFFBEB"
-    DANGER = "#B91C1C"
-    DANGER_HOVER = "#991B1B"
-    DANGER_SOFT = "#FEF2F2"
+    SUCCESS = ("#15803D", "#4ADE80")
+    SUCCESS_SOFT = ("#F0FDF4", "#14291D")
+    WARNING = ("#B45309", "#FBBF24")
+    WARNING_SOFT = ("#FFFBEB", "#332611")
+    DANGER = ("#B91C1C", "#F87171")
+    DANGER_HOVER = ("#991B1B", "#EF4444")
+    DANGER_SOFT = ("#FEF2F2", "#38191D")
 
-    DISABLED = "#CBD5E1"
-    DISABLED_TEXT = "#64748B"
+    DISABLED = ("#CBD5E1", "#475569")
+    DISABLED_TEXT = ("#64748B", "#94A3B8")
 
 
 class Spacing:
