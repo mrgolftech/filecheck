@@ -128,12 +128,13 @@ class SettingsPage(ctk.CTkFrame):
             box.insert("1.0", "\n".join(data.keywords.get(level, [])))
         self.extensions_entry.delete(0, "end")
         self.extensions_entry.insert(0, ", ".join(data.extensions))
-        self.rules_path_label.configure(text=f"规则文件：{data.rules_path}")
+        self.rules_path_label.configure(text=f"规则文件：{data.rules_path}", text_color=Palette.TEXT_MUTED)
         self.save_state.set_tone("success", "已载入")
 
     def saved(self, data) -> None:
         self.set_values(data)
         self.save_state.set_tone("success", "已保存")
+        self.winfo_toplevel().event_generate("<<FileCheckScanBasisChanged>>", when="tail")
 
     def save_error(self, message: str) -> None:
         self.save_state.set_tone("danger", "保存失败")
