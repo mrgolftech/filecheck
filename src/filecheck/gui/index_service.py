@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List
+from typing import List, Optional
 
 from filecheck.portable_everything import (
     DriveInfo,
@@ -25,22 +25,15 @@ class IndexContext:
 
     @property
     def ready(self) -> bool:
-        return bool(self.selected_roots)
+        return bool(self.selected_roots) and bool(self.backup_roots)
 
     @property
     def backup_ready(self) -> bool:
         return bool(self.backup_roots)
 
-
-@dataclass(frozen=True)
-class IndexBuildResult:
-    selected_roots: List[str]
-    ntfs_roots: List[str]
-    folder_roots: List[str]
-    database_path: str
-    config_path: str
-    everything_version: str
-    es_version: str
+    @property
+    def backup_root(self) -> Optional[str]:
+        return self.backup_roots[0] if self.backup_roots else None
 
 
 def load_index_context() -> IndexContext:
@@ -55,6 +48,17 @@ def load_index_context() -> IndexContext:
         database_path=str(state.get("database_path", "")),
         backup_roots=current_backup_roots(),
     )
+
+
+@dataclass(frozen=True)
+class IndexBuildResult:
+    selected_roots: List[str]
+    ntfs_roots: List[str]
+    folder_roots: List[str]
+    database_path: str
+    config_path: str
+    everything_version: str
+    es_version: str
 
 
 def run_index_build(selected_roots: List[str], task: TaskContext) -> IndexBuildResult:
