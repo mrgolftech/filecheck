@@ -20,7 +20,7 @@ build = ["pyinstaller>=6,<7"]
 
 [project.scripts]
 filecheck = "filecheck.launcher:main"
-filecheck-gui = "filecheck.gui.app:main"
+filecheck-gui = "filecheck.gui.entry:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
