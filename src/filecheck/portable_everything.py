@@ -207,7 +207,6 @@ def _write_ini(
 
     ntfs_paths = [drive.rstrip("\\/") for drive in ntfs_roots]
     ntfs_count = len(ntfs_paths)
-    folder_count = len(folder_roots)
     monitor = ",".join("1" for _ in folder_roots)
     buffers = ",".join("65536" for _ in folder_roots)
     rescan = ",".join("0" for _ in folder_roots)
@@ -216,7 +215,12 @@ def _write_ini(
     lines = [
         "[Everything]",
         "app_data=0",
+        # Keep the dedicated FileCheck instance headless.  The explicit
+        # Everything.exe -db argument is the single source of truth for the DB
+        # file, so do not also set db_location here.
         "run_as_admin=0",
+        "run_in_background=1",
+        "ipc=1",
         "auto_include_fixed_volumes=0",
         "auto_include_removable_volumes=0",
         "auto_remove_offline_ntfs_volumes=0",
@@ -237,7 +241,6 @@ def _write_ini(
         f"folder_buffer_size_list={buffers}",
         f"folder_rescan_if_full_list={rescan}",
         f"folder_update_types={update_types}",
-        f"db_location={root}",
         "db_multi_user_filename=0",
         "db_compress=0",
         "check_for_updates_on_startup=0",
