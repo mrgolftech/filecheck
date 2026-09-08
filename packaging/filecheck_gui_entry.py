@@ -13,8 +13,9 @@ def _bootstrap_frozen_runtime() -> None:
     exe_dir = Path(sys.executable).resolve().parent
     bundled_root = Path(getattr(sys, "_MEIPASS", exe_dir))
 
-    # The final portable package keeps PyInstaller DLL/PYD files inside the
-    # FileCheck-GUI subdirectory while config/tools/runtime live at package root.
+    # Final packages keep the runtime EXE/DLL/PYD files under app\ while
+    # config/tools/runtime stay at package root. Raw PyInstaller smoke builds
+    # fall back to the onedir itself.
     parent = exe_dir.parent
     if (parent / "config" / "rules.json").is_file() or (parent / "tools").is_dir():
         portable_home = parent
@@ -26,8 +27,6 @@ def _bootstrap_frozen_runtime() -> None:
     if external_rules.is_file():
         os.chdir(portable_home)
     else:
-        # Raw PyInstaller onedir smoke tests do not yet have the assembled
-        # package root. Materialize the embedded default rules into LOCALAPPDATA.
         local_appdata = os.environ.get("LOCALAPPDATA")
         runtime_root = Path(local_appdata) / "FileCheck" if local_appdata else exe_dir / "FileCheck-data"
         config_dir = runtime_root / "config"
@@ -49,7 +48,8 @@ def _bootstrap_frozen_runtime() -> None:
 
 _bootstrap_frozen_runtime()
 
-from filecheck.gui.app import FileCheckApp, main  # noqa: E402
+from filecheck.gui.app import FileCheckApp  # noqa: E402
+from filecheck.gui.entry import main  # noqa: E402
 
 
 def _smoke_test() -> int:
