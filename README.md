@@ -51,6 +51,58 @@ FileCheck\
 
 `runtime` 和 `scan-results` 会在首次使用时自动创建。
 
+## 正式使用前准备
+
+以下步骤是推荐的人工准备流程。清理 Windows 临时文件、Recent 快捷方式和跳转列表记录会删除相应历史记录，请先确认这些记录不再需要，并按本单位制度执行。
+
+### 1. 清理 Windows 临时目录和最近记录
+
+先清空 Windows 回收站，然后依次处理：
+
+1. **清理当前用户临时目录**
+
+   `Win + R` → 输入：
+
+   ```text
+   %temp%
+   ```
+
+   全选删除。正在被系统或应用占用、无法删除的文件直接跳过即可。
+
+2. **清理系统级临时目录**
+
+   `Win + R` → 输入：
+
+   ```text
+   C:\Windows\Temp
+   ```
+
+   同样全选删除，无法删除的占用文件直接跳过。
+
+3. **清理最近使用快捷方式目录**
+
+   `Win + R` → 输入：
+
+   ```text
+   recent
+   ```
+
+   全选删除。
+
+4. **清理 AutomaticDestinations**
+
+   ```text
+   %APPDATA%\Microsoft\Windows\Recent\AutomaticDestinations
+   ```
+
+5. **清理 CustomDestinations**
+
+   ```text
+   %APPDATA%\Microsoft\Windows\Recent\CustomDestinations
+   ```
+
+> FileCheck 程序本身不会自动执行以上 Windows 清理操作，也不会自动处理浏览器历史、USBSTOR、Office/WPS MRU 或注册表记录。以上内容只是使用前的独立人工准备步骤。
+
 ## 启动方式
 
 推荐右键：
