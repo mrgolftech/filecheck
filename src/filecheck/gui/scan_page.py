@@ -201,6 +201,7 @@ class ScanPage(ctk.CTkFrame):
         return [root for root, var in self._drive_vars.items() if bool(var.get())]
 
     def begin_index(self) -> None:
+        self.winfo_toplevel().event_generate("<<FileCheckScanBasisChanged>>", when="tail")
         self._begin("正在创建 FileCheck 专用索引……")
         self.append_log("索引任务已启动。NTFS 快速索引需要管理员权限。")
 
