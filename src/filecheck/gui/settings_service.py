@@ -10,7 +10,7 @@ from filecheck.util import read_json, runtime_dir, write_json
 
 @dataclass(frozen=True)
 class SettingsData:
-    backup_roots: List[str]
+    backup_root: str
     keywords: Dict[str, List[str]]
     extensions: List[str]
     max_results_per_keyword: int
@@ -19,8 +19,14 @@ class SettingsData:
     settings_path: Path
 
     @property
-    def backup_root(self) -> str:
-        return self.backup_roots[0] if self.backup_roots else ""
+    def backup_roots(self) -> List[str]:
+        """Compatibility view for services written during the GUI branch.
+
+        FileCheck has exactly one configured backup root.  Returning a
+        singleton list keeps older call sites harmless while preserving that
+        invariant.
+        """
+        return [self.backup_root] if self.backup_root else []
 
 
 def settings_path() -> Path:
@@ -38,34 +44,35 @@ def _read_runtime_settings() -> dict:
     return payload if isinstance(payload, dict) else {}
 
 
-def _normalize_backup_roots(values: List[str]) -> List[str]:
-    result: List[str] = []
-    seen = set()
-    for raw in values:
-        text = str(raw or "").strip()
-        if not text:
-            continue
-        root = Path(text).expanduser().resolve()
-        key = str(root).lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        result.append(str(root))
-    return result
-
-
-def current_backup_roots() -> List[str]:
-    payload = _read_runtime_settings()
-    configured = payload.get("backup_roots")
-    if isinstance(configured, list):
-        return _normalize_backup_roots([str(value) for value in configured])
-    legacy = str(payload.get("backup_root") or "").strip()
-    return _normalize_backup_roots([legacy]) if legacy else []
+def _normalize_backup_root(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    return str(Path(text).expanduser().resolve())
 
 
 def current_backup_root() -> Optional[str]:
-    roots = current_backup_roots()
-    return roots[0] if roots else None
+    payload = _read_runtime_settings()
+    value = str(payload.get("backup_root") or "").strip()
+    if value:
+        return _normalize_backup_root(value)
+
+    # Compatibility with the brief development build that stored multiple
+    # roots.  Migrate deterministically by accepting the first non-empty entry
+    # only; the product model remains a single backup root.
+    configured = payload.get("backup_roots")
+    if isinstance(configured, list):
+        for item in configured:
+            value = str(item or "").strip()
+            if value:
+                return _normalize_backup_root(value)
+    return None
+
+
+def current_backup_roots() -> List[str]:
+    """Compatibility helper: always returns zero or one configured root."""
+    root = current_backup_root()
+    return [root] if root else []
 
 
 def current_appearance() -> str:
@@ -78,16 +85,15 @@ def save_appearance(appearance: str) -> str:
     if mode not in ("light", "dark"):
         raise RuntimeError("界面主题只能选择浅色或暗色")
     payload = _read_runtime_settings()
-    roots = current_backup_roots()
-    payload.update(
+    root = current_backup_root() or ""
+    write_json(
+        settings_path(),
         {
-            "schema_version": 2,
-            "backup_roots": roots,
-            "backup_root": roots[0] if roots else "",
+            "schema_version": 3,
+            "backup_root": root,
             "appearance": mode,
-        }
+        },
     )
-    write_json(settings_path(), payload)
     return mode
 
 
@@ -103,7 +109,7 @@ def load_settings() -> SettingsData:
         keywords.setdefault(level, [])
     extensions = _normalize_extensions([str(value) for value in rules.get("extensions", [])])
     return SettingsData(
-        backup_roots=current_backup_roots(),
+        backup_root=current_backup_root() or "",
         keywords=keywords,
         extensions=extensions,
         max_results_per_keyword=int(rules.get("max_results_per_keyword", 100000)),
@@ -140,28 +146,32 @@ def _normalize_extensions(values: List[str]) -> List[str]:
     return result
 
 
-def _split_backup_roots(value: Union[str, List[str]]) -> List[str]:
+def _coerce_single_backup_root(value: Union[str, List[str]]) -> str:
     if isinstance(value, list):
-        return [str(item) for item in value]
-    normalized = str(value or "").replace("；", "\n").replace(";", "\n")
-    return [line.strip() for line in normalized.splitlines() if line.strip()]
+        non_empty = [str(item).strip() for item in value if str(item).strip()]
+        if len(non_empty) > 1:
+            raise RuntimeError("FileCheck 只支持一个统一备份根目录")
+        return non_empty[0] if non_empty else ""
+    text = str(value or "").strip()
+    if "\n" in text or "\r" in text or ";" in text or "；" in text:
+        raise RuntimeError("FileCheck 只支持一个统一备份根目录")
+    return text
 
 
 def save_settings(
-    backup_roots: Union[str, List[str]],
+    backup_root: Union[str, List[str]],
     keywords: Dict[str, List[str]],
     extensions: List[str],
     max_results_per_keyword: int = 100000,
     appearance: Optional[str] = None,
 ) -> SettingsData:
-    roots = _normalize_backup_roots(_split_backup_roots(backup_roots))
-    if not roots:
-        raise RuntimeError("请至少设置一个备份根目录")
-    for value in roots:
-        root = Path(value)
-        root.mkdir(parents=True, exist_ok=True)
-        if not root.is_dir():
-            raise RuntimeError(f"备份路径不是有效目录: {root}")
+    root_text = _coerce_single_backup_root(backup_root)
+    if not root_text:
+        raise RuntimeError("请设置备份根目录")
+    root = Path(root_text).expanduser().resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    if not root.is_dir():
+        raise RuntimeError(f"备份路径不是有效目录: {root}")
 
     cleaned_keywords: Dict[str, List[str]] = {}
     for level in ("high", "sensitive", "review"):
@@ -189,9 +199,8 @@ def save_settings(
     write_json(
         settings_path(),
         {
-            "schema_version": 2,
-            "backup_roots": roots,
-            "backup_root": roots[0],
+            "schema_version": 3,
+            "backup_root": str(root),
             "appearance": mode,
         },
     )
