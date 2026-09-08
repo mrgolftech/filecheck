@@ -153,6 +153,13 @@ class BackupPage(ctk.CTkFrame):
         self.log_box.grid(row=4, column=0, sticky="nsew", padx=Layout.CARD_PADDING, pady=(0, Layout.CARD_PADDING))
         self.log_box.configure(state="disabled")
 
+    def clear_scan_result(self, message: str = "扫描规则或索引已变化，请重新扫描后再备份。") -> None:
+        self._scan_ready = False
+        self.source_state.set_tone("warning", "需要重新扫描")
+        self.source_label.configure(text=message, text_color=Palette.WARNING)
+        self._invalidate_preflight()
+        self._refresh_controls()
+
     def set_scan_result(self, result) -> None:
         count = int(result.counts.get("total", 0))
         self._scan_ready = count > 0
