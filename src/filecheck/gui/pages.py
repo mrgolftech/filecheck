@@ -84,6 +84,14 @@ class ResultPage(ctk.CTkFrame):
         self.rows_host.grid(row=1, column=0, sticky="nsew", padx=Layout.CARD_PADDING, pady=(0, Layout.CARD_PADDING))
         self.rows_host.grid_columnconfigure(1, weight=1)
 
+    def clear_result(self, message: str = "完成一次扫描后，这里将显示结果摘要和候选文件列表。") -> None:
+        self.result_host.grid_remove()
+        self.empty_state.grid()
+        labels = self.empty_state.winfo_children()
+        if len(labels) >= 2:
+            labels[0].configure(text="扫描结果已失效")
+            labels[1].configure(text=message)
+
     def set_result(self, result) -> None:
         self.empty_state.grid_remove()
         self.result_host.grid()
