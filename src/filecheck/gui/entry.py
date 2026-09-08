@@ -114,14 +114,14 @@ def _attach_batch_selectors(app: FileCheckApp) -> None:
     if removal_page is not None and not hasattr(removal_page, "_filecheck_batch_selector"):
         attach_backup_batch_selector(
             removal_page,
-            lambda value: app._load_removal_target(value),
+            lambda value: app._load_removal_target(value, quiet=True),
         )
 
     restore_page = app._pages.get("restore")
     if restore_page is not None and not hasattr(restore_page, "_filecheck_batch_selector"):
         attach_backup_batch_selector(
             restore_page,
-            lambda value: app._load_restore_target(value),
+            lambda value: app._load_restore_target(value, quiet=True),
         )
 
 
