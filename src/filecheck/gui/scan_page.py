@@ -6,6 +6,7 @@ from typing import Callable, Dict, List
 import customtkinter as ctk
 
 from .components import Card, PageHeader, PrimaryButton, SecondaryButton, StatusPill
+from .path_widgets import FileLocationRow
 from .tokens import Layout, Palette, Radius, Spacing, Typography
 
 
@@ -49,7 +50,7 @@ class ScanPage(ctk.CTkFrame):
 
         self.drives_host = ctk.CTkFrame(index_card, fg_color="transparent")
         self.drives_host.grid(row=1, column=0, sticky="ew", padx=Layout.CARD_PADDING)
-        self.drives_host.grid_columnconfigure((0, 1, 2, 3), weight=1, uniform="drive")
+        self.drives_host.grid_columnconfigure((0, 1), weight=1, uniform="drive")
         self.no_drive_label = ctk.CTkLabel(
             self.drives_host,
             text="正在读取 Windows 磁盘信息……",
@@ -57,7 +58,7 @@ class ScanPage(ctk.CTkFrame):
             font=Typography.CAPTION,
             anchor="w",
         )
-        self.no_drive_label.grid(row=0, column=0, columnspan=4, sticky="w")
+        self.no_drive_label.grid(row=0, column=0, columnspan=2, sticky="w")
 
         self.index_detail = ctk.CTkLabel(
             index_card,
@@ -66,11 +67,16 @@ class ScanPage(ctk.CTkFrame):
             font=Typography.SMALL,
             anchor="w",
             justify="left",
-            wraplength=840,
+            wraplength=620,
         )
         self.index_detail.grid(row=2, column=0, sticky="ew", padx=Layout.CARD_PADDING, pady=(Spacing.SM, 0))
+        self.database_row = FileLocationRow(index_card, "索引数据库")
+        self.database_row.grid(row=3, column=0, sticky="ew", padx=Layout.CARD_PADDING, pady=(Spacing.XS, 0))
+        self.backup_root_row = FileLocationRow(index_card, "备份根目录")
+        self.backup_root_row.grid(row=4, column=0, sticky="ew", padx=Layout.CARD_PADDING, pady=(Spacing.XS, 0))
+
         index_actions = ctk.CTkFrame(index_card, fg_color="transparent")
-        index_actions.grid(row=3, column=0, sticky="w", padx=Layout.CARD_PADDING, pady=(Spacing.MD, Layout.CARD_PADDING))
+        index_actions.grid(row=5, column=0, sticky="w", padx=Layout.CARD_PADDING, pady=(Spacing.MD, Layout.CARD_PADDING))
         self.index_button = SecondaryButton(index_actions, "创建 / 更新索引", command=self._build_index, width=150, state="disabled")
         self.index_button.pack(side="left")
         self.settings_button = SecondaryButton(index_actions, "打开设置", command=self._on_open_settings, width=105)
@@ -89,7 +95,7 @@ class ScanPage(ctk.CTkFrame):
             font=Typography.CAPTION,
             anchor="w",
             justify="left",
-            wraplength=840,
+            wraplength=620,
         )
         self.rules_label.grid(row=1, column=0, sticky="ew", padx=Layout.CARD_PADDING)
         actions = ctk.CTkFrame(rules_card, fg_color="transparent")
@@ -142,6 +148,8 @@ class ScanPage(ctk.CTkFrame):
         current = set(str(value).lower() for value in index_info.selected_roots)
         self._settings_ready = bool(index_info.backup_root)
         self._index_ready = bool(index_info.ready)
+        self.database_row.set_path(index_info.database_path)
+        self.backup_root_row.set_path(index_info.backup_root)
         for widget in self._drive_checks:
             widget.destroy()
         self._drive_checks = []
@@ -169,7 +177,7 @@ class ScanPage(ctk.CTkFrame):
                     border_color=Palette.BORDER,
                     font=Typography.CAPTION,
                 )
-                check.grid(row=idx // 4, column=idx % 4, sticky="w", padx=(0, Spacing.SM), pady=Spacing.XS)
+                check.grid(row=idx // 2, column=idx % 2, sticky="w", padx=(0, Spacing.SM), pady=Spacing.XS)
                 self._drive_checks.append(check)
 
         if not self._settings_ready:
@@ -182,11 +190,7 @@ class ScanPage(ctk.CTkFrame):
         elif self._index_ready:
             self.index_state.set_tone("success", "索引已就绪")
             self.index_detail.configure(
-                text=(
-                    f"当前索引范围：{'、'.join(index_info.selected_roots)}    模式：{index_info.index_mode}\n"
-                    f"索引数据库：{index_info.database_path or '-'}\n"
-                    f"备份目录排除：{index_info.backup_root}"
-                ),
+                text=f"当前索引范围：{'、'.join(index_info.selected_roots)}    模式：{index_info.index_mode}",
                 text_color=Palette.TEXT_SECONDARY,
             )
             self.progress_label.configure(text="索引已就绪，可以开始扫描", text_color=Palette.SUCCESS)
@@ -196,7 +200,6 @@ class ScanPage(ctk.CTkFrame):
             self.index_detail.configure(
                 text=(
                     f"检测到旧/失败的索引状态，但当前数据库不可用：{issue}\n"
-                    f"预期数据库：{index_info.database_path}\n"
                     "请重新点击“创建 / 更新索引”。在数据库确认写盘前不会开放扫描。"
                 ),
                 text_color=Palette.DANGER,
@@ -204,10 +207,7 @@ class ScanPage(ctk.CTkFrame):
             self.progress_label.configure(text="索引需要重新创建并确认写盘", text_color=Palette.DANGER)
         else:
             self.index_state.set_tone("warning", "需要创建索引")
-            self.index_detail.configure(
-                text=f"尚未建立 FileCheck 专用索引。备份目录排除：{index_info.backup_root}",
-                text_color=Palette.WARNING,
-            )
+            self.index_detail.configure(text="尚未建立 FileCheck 专用索引。", text_color=Palette.WARNING)
             self.progress_label.configure(text="等待创建索引", text_color=Palette.TEXT_SECONDARY)
 
         labels = {"high": "高风险", "sensitive": "敏感", "review": "复核"}
@@ -239,7 +239,8 @@ class ScanPage(ctk.CTkFrame):
         self.progress_bar.set(1.0)
         self.progress_label.configure(text="索引创建并写盘完成，可以开始扫描", text_color=Palette.SUCCESS)
         self.index_state.set_tone("success", "索引已就绪")
-        self.index_detail.configure(text=f"当前索引范围：{'、'.join(result.selected_roots)}\n索引数据库：{result.database_path}", text_color=Palette.TEXT_SECONDARY)
+        self.index_detail.configure(text=f"当前索引范围：{'、'.join(result.selected_roots)}", text_color=Palette.TEXT_SECONDARY)
+        self.database_row.set_path(result.database_path)
         self._refresh_controls()
 
     def begin_scan(self) -> None:
