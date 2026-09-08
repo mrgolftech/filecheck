@@ -5,6 +5,7 @@ import os
 import sys
 
 from . import cli as legacy_cli
+from . import db_persistence
 from . import fast_index
 from . import menu
 from . import resilient_cli
@@ -12,8 +13,15 @@ from . import restore_reporting
 from . import resume_ui
 
 
+# Install the Everything database-path/persistence fix before routing commands.
+# The dedicated named instance stores its DB in runtime\everything and flushes
+# the database to disk after a successful rebuild.
+db_persistence.install()
+
 # Route command execution and resume handling through the hardened v0.1.1
 # implementations while keeping menu.py as the coherent user-facing workflow.
+fast_index.configure_and_reindex = db_persistence.configure_and_reindex
+legacy_cli.ensure_instance = db_persistence.ensure_instance
 legacy_cli.cmd_index = fast_index.cmd_index
 legacy_cli.cmd_restore = restore_reporting.cmd_restore
 menu.cli = resilient_cli
