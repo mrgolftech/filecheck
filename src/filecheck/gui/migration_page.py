@@ -5,6 +5,7 @@ from tkinter import filedialog
 
 import customtkinter as ctk
 
+from .batch_selector import BackupBatchSelector
 from .components import (
     Card,
     DangerButton,
@@ -45,44 +46,34 @@ class MigrationPage(ctk.CTkFrame):
         PageHeader(
             self,
             "源文件删除",
-            "这是独立的高风险步骤：先验证备份并复核全部源文件，再明确确认是否删除。",
+            "这是独立的高风险步骤：从统一备份根目录选择一个已验证批次，复核全部源文件后再明确确认删除。",
         ).grid(row=0, column=0, sticky="ew")
 
         target_card = Card(self)
         target_card.grid(row=1, column=0, sticky="ew", pady=(Spacing.LG, 0))
         target_card.grid_columnconfigure(0, weight=1)
         header = ctk.CTkFrame(target_card, fg_color="transparent")
-        header.grid(row=0, column=0, columnspan=3, sticky="ew", padx=Layout.CARD_PADDING, pady=(Layout.CARD_PADDING, Spacing.SM))
+        header.grid(row=0, column=0, columnspan=2, sticky="ew", padx=Layout.CARD_PADDING, pady=(Layout.CARD_PADDING, Spacing.SM))
         header.grid_columnconfigure(0, weight=1)
         ctk.CTkLabel(header, text="已验证备份批次", text_color=Palette.TEXT, font=Typography.CARD_TITLE, anchor="w").grid(row=0, column=0, sticky="w")
         self.state_pill = StatusPill(header, "等待载入", tone="neutral")
         self.state_pill.grid(row=0, column=1, sticky="e")
-        self.path_entry = ctk.CTkEntry(
-            target_card,
-            textvariable=self.backup_path,
-            height=Layout.CONTROL_HEIGHT,
-            corner_radius=Radius.CONTROL,
-            border_color=Palette.BORDER,
-            fg_color=Palette.SURFACE,
-            text_color=Palette.TEXT,
-            font=Typography.BODY,
-            placeholder_text="选择包含 manifest.json 的备份批次目录",
-        )
-        self.path_entry.grid(row=1, column=0, sticky="ew", padx=(Layout.CARD_PADDING, Spacing.SM))
-        self.browse_button = SecondaryButton(target_card, "选择目录", command=self._pick_backup, width=100)
-        self.browse_button.grid(row=1, column=1, padx=(0, Spacing.SM))
-        self.load_button = SecondaryButton(target_card, "载入备份", command=self._load, width=100)
-        self.load_button.grid(row=1, column=2, padx=(0, Layout.CARD_PADDING))
+
+        self.batch_selector = BackupBatchSelector(target_card, self._select_discovered_batch)
+        self.batch_selector.grid(row=1, column=0, sticky="ew", padx=(Layout.CARD_PADDING, Spacing.SM))
+        self.browse_button = SecondaryButton(target_card, "手动选择其他目录", command=self._pick_backup, width=145)
+        self.browse_button.grid(row=1, column=1, sticky="n", padx=(0, Layout.CARD_PADDING))
+
         self.target_label = ctk.CTkLabel(
             target_card,
-            text="可直接载入刚完成的备份，也可选择以前的备份批次继续未完成删除。",
+            text="将自动扫描设置中的统一备份根目录；若存在多个含 manifest.json 的批次，默认选择目录名最新的一个。",
             text_color=Palette.TEXT_SECONDARY,
             font=Typography.CAPTION,
             anchor="w",
             justify="left",
             wraplength=820,
         )
-        self.target_label.grid(row=2, column=0, columnspan=3, sticky="ew", padx=Layout.CARD_PADDING, pady=(Spacing.SM, Layout.CARD_PADDING))
+        self.target_label.grid(row=2, column=0, columnspan=2, sticky="ew", padx=Layout.CARD_PADDING, pady=(Spacing.SM, Layout.CARD_PADDING))
 
         safety_card = Card(self)
         safety_card.grid(row=2, column=0, sticky="ew", pady=(Spacing.MD, 0))
@@ -152,36 +143,55 @@ class MigrationPage(ctk.CTkFrame):
         )
         self.log_box.grid(row=3, column=0, sticky="nsew", padx=Layout.CARD_PADDING, pady=(0, Layout.CARD_PADDING))
         self.log_box.configure(state="disabled")
+        self.bind("<Map>", self._page_mapped, add="+")
+        self.after_idle(self._refresh_batches)
 
-    def set_target(self, value) -> None:
-        self.backup_path.set(str(value) if value else "")
+    def _page_mapped(self, _event=None) -> None:
+        self._refresh_batches()
+
+    def _refresh_batches(self) -> None:
+        preferred = str(self._info.backup_path) if self._info is not None else None
+        self.batch_selector.refresh(preferred=preferred, auto_load=True)
+
+    def _select_discovered_batch(self, value: str) -> None:
+        self.backup_path.set(value)
         self._info = None
         self._preflight = None
+        self._on_load(value)
+
+    def set_target(self, value) -> None:
+        text = str(value) if value else ""
+        self.backup_path.set(text)
+        self._info = None
+        self._preflight = None
+        if text:
+            self.batch_selector.refresh(preferred=text, auto_load=False)
         self._refresh_controls()
 
     def set_info(self, info) -> None:
         self._info = info
         self._preflight = None
         self.backup_path.set(str(info.backup_path))
+        self.batch_selector.set_selected_path(str(info.backup_path))
         self.metric_files.set_value(str(info.file_count))
         self.metric_size.set_value(_format_bytes(info.total_bytes))
         self.metric_deleted.set_value(str(info.deleted), "success")
         self.metric_failed.set_value(str(info.failed + info.pending), "danger" if info.failed or info.pending else "success")
         if not info.has_state:
             self.state_pill.set_tone("info", "待安全复核")
-            self.target_label.configure(text=f"批次：{info.batch_id}\n尚未创建 source-removal.json；当前未删除任何源文件。")
+            self.target_label.configure(text=f"批次：{info.batch_id}\n目录：{info.backup_path}\n尚未创建 source-removal.json；当前未删除任何源文件。")
             self.safety_label.configure(
                 text="下一步会先再次验证备份，并对 manifest 中全部源文件重新计算 SHA-256。任何不一致都会阻止整批删除。",
                 text_color=Palette.TEXT_SECONDARY,
             )
         elif info.status == "completed":
             self.state_pill.set_tone("success", "删除完成")
-            self.target_label.configure(text=f"批次：{info.batch_id}\n删除状态：{info.state_path}")
+            self.target_label.configure(text=f"批次：{info.batch_id}\n目录：{info.backup_path}\n删除状态：{info.state_path}")
             self.safety_label.configure(text="该批次源文件删除已经完成。", text_color=Palette.SUCCESS)
         else:
             tone = "danger" if info.failed else "warning"
             self.state_pill.set_tone(tone, "存在未完成项")
-            self.target_label.configure(text=f"批次：{info.batch_id}\n删除状态：{info.state_path}")
+            self.target_label.configure(text=f"批次：{info.batch_id}\n目录：{info.backup_path}\n删除状态：{info.state_path}")
             self.safety_label.configure(
                 text=(
                     f"已有删除状态：已删除 {info.deleted}，已不存在 {info.already_absent}，"
@@ -292,18 +302,14 @@ class MigrationPage(ctk.CTkFrame):
         self.log_box.configure(state="disabled")
 
     def _refresh_controls(self) -> None:
+        self.batch_selector.set_busy(self._busy)
+        self.browse_button.configure(state="disabled" if self._busy else "normal")
         if self._busy:
-            self.path_entry.configure(state="disabled")
-            self.browse_button.configure(state="disabled")
-            self.load_button.configure(state="disabled")
             self.preflight_button.configure(state="disabled")
             self.remove_button.configure(state="disabled")
             self.resume_button.configure(state="disabled")
             self.cancel_button.configure(state="normal")
             return
-        self.path_entry.configure(state="normal")
-        self.browse_button.configure(state="normal")
-        self.load_button.configure(state="normal" if self.backup_path.get().strip() else "disabled")
         info = self._info
         new_ready = bool(info and not info.has_state)
         self.preflight_button.configure(state="normal" if new_ready else "disabled")
@@ -313,15 +319,12 @@ class MigrationPage(ctk.CTkFrame):
         self.cancel_button.configure(state="disabled")
 
     def _pick_backup(self) -> None:
-        path = filedialog.askdirectory(title="选择 FileCheck 备份批次目录")
+        path = filedialog.askdirectory(title="手动选择 FileCheck 备份批次目录")
         if path:
             self.backup_path.set(path)
             self._info = None
             self._preflight = None
-            self._refresh_controls()
-
-    def _load(self) -> None:
-        self._on_load(self.backup_path.get().strip())
+            self._on_load(path)
 
     def _preflight_action(self) -> None:
         if self._info:
