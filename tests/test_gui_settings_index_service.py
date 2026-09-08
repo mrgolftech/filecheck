@@ -112,8 +112,11 @@ def test_save_appearance_does_not_require_backup_directory(tmp_path: Path, monke
     assert settings_service.current_backup_root() is None
 
 
-def test_gui_index_service_uses_hardened_db_persistence_and_truthful_elapsed_progress(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_gui_index_service_uses_hardened_db_persistence_and_truthful_elapsed_progress(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(index_service, "current_backup_root", lambda: r"H:\FileCheckBackup")
+    durable_db = tmp_path / "Everything-FileCheck.db"
+    durable_db.write_bytes(b"database")
+    monkeypatch.setattr(index_service.db_persistence, "database_path", lambda: durable_db)
     captured = {}
 
     def fake_configure(selected_roots, backup_root, progress=None):
@@ -126,8 +129,8 @@ def test_gui_index_service_uses_hardened_db_persistence_and_truthful_elapsed_pro
             selected_roots=["C:\\", "D:\\"],
             ntfs_roots=["C:\\", "D:\\"],
             folder_roots=[],
-            database_path=Path("C:\\FileCheck\\runtime\\everything\\Everything-FileCheck.db"),
-            config_path=Path("C:\\FileCheck\\runtime\\everything\\Everything.ini"),
+            database_path=durable_db,
+            config_path=tmp_path / "Everything.ini",
             status=SimpleNamespace(everything_version="1.4.1.1032", es_version="1.1.0.37"),
         )
 
