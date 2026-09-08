@@ -7,6 +7,7 @@ from typing import Callable, Dict, List
 import customtkinter as ctk
 
 from .components import Card, PageHeader, PrimaryButton, SecondaryButton, StatusPill
+from .path_widgets import FileLocationRow
 from .settings_service import save_appearance
 from .tokens import Layout, Palette, Radius, Spacing, Typography
 
@@ -63,7 +64,7 @@ class SettingsPage(ctk.CTkFrame):
             font=Typography.SMALL,
             anchor="w",
             justify="left",
-            wraplength=650,
+            wraplength=520,
         ).grid(row=2, column=0, columnspan=2, sticky="ew", padx=Layout.CARD_PADDING, pady=(Spacing.SM, Layout.CARD_PADDING))
 
         theme_card = Card(top)
@@ -91,7 +92,7 @@ class SettingsPage(ctk.CTkFrame):
             font=Typography.SMALL,
             anchor="w",
             justify="left",
-            wraplength=230,
+            wraplength=200,
         ).grid(row=2, column=0, sticky="ew", padx=Layout.CARD_PADDING, pady=(Spacing.SM, Layout.CARD_PADDING))
 
         rules_card = Card(self)
@@ -157,15 +158,19 @@ class SettingsPage(ctk.CTkFrame):
         actions = ctk.CTkFrame(rules_card, fg_color="transparent")
         actions.grid(row=4, column=0, columnspan=3, sticky="ew", padx=Layout.CARD_PADDING, pady=Layout.CARD_PADDING)
         actions.grid_columnconfigure(0, weight=1)
-        self.rules_path_label = ctk.CTkLabel(
+        self.rules_file_row = FileLocationRow(actions, "规则文件")
+        self.rules_file_row.grid(row=0, column=0, sticky="ew", padx=(0, Spacing.SM))
+        PrimaryButton(actions, "保存设置", command=self._save, width=120).grid(row=0, column=1, sticky="e")
+        self.feedback_label = ctk.CTkLabel(
             actions,
             text="",
             text_color=Palette.TEXT_MUTED,
             font=Typography.SMALL,
             anchor="w",
+            justify="left",
+            wraplength=620,
         )
-        self.rules_path_label.grid(row=0, column=0, sticky="w")
-        PrimaryButton(actions, "保存设置", command=self._save, width=120).grid(row=0, column=1, sticky="e")
+        self.feedback_label.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(Spacing.XS, 0))
 
     def set_values(self, data) -> None:
         self.backup_root.set(data.backup_root)
@@ -175,7 +180,8 @@ class SettingsPage(ctk.CTkFrame):
         self.extensions_entry.delete(0, "end")
         self.extensions_entry.insert(0, ", ".join(data.extensions))
         self.appearance.set("暗色" if data.appearance == "dark" else "浅色")
-        self.rules_path_label.configure(text=f"规则文件：{data.rules_path}", text_color=Palette.TEXT_MUTED)
+        self.rules_file_row.set_path(data.rules_path)
+        self.feedback_label.configure(text="", text_color=Palette.TEXT_MUTED)
         self.save_state.set_tone("success", "已载入")
 
     def saved(self, data) -> None:
@@ -184,7 +190,7 @@ class SettingsPage(ctk.CTkFrame):
 
     def save_error(self, message: str) -> None:
         self.save_state.set_tone("danger", "保存失败")
-        self.rules_path_label.configure(text=message, text_color=Palette.DANGER)
+        self.feedback_label.configure(text=message, text_color=Palette.DANGER)
 
     @staticmethod
     def _split_values(text: str) -> List[str]:
