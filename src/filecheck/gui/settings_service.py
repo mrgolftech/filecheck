@@ -57,7 +57,7 @@ def load_settings() -> SettingsData:
     }
     for level in ("high", "sensitive", "review"):
         keywords.setdefault(level, [])
-    extensions = [str(value).lstrip(".") for value in rules.get("extensions", []) if str(value).strip()]
+    extensions = _normalize_extensions([str(value) for value in rules.get("extensions", [])])
     return SettingsData(
         backup_root=current_backup_root() or "",
         keywords=keywords,
@@ -83,6 +83,18 @@ def _clean_values(values: List[str]) -> List[str]:
     return result
 
 
+def _normalize_extensions(values: List[str]) -> List[str]:
+    result: List[str] = []
+    seen = set()
+    for raw in values:
+        value = str(raw).strip().lower().lstrip(".")
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        result.append(value)
+    return result
+
+
 def save_settings(
     backup_root: str,
     keywords: Dict[str, List[str]],
@@ -103,7 +115,7 @@ def save_settings(
     if not any(cleaned_keywords.values()):
         raise RuntimeError("至少需要配置一个扫描关键词")
 
-    cleaned_extensions = [value.lower().lstrip(".") for value in _clean_values(extensions)]
+    cleaned_extensions = _normalize_extensions(extensions)
     if not cleaned_extensions:
         raise RuntimeError("至少需要配置一种文件类型")
 
