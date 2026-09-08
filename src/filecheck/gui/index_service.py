@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import List
 
 from filecheck.portable_everything import (
     DriveInfo,
@@ -11,7 +11,7 @@ from filecheck.portable_everything import (
     load_index_state,
 )
 
-from .settings_service import current_backup_root
+from .settings_service import current_backup_roots
 from .task_runner import TaskContext
 
 
@@ -21,11 +21,15 @@ class IndexContext:
     selected_roots: List[str]
     index_mode: str
     database_path: str
-    backup_root: Optional[str]
+    backup_roots: List[str]
 
     @property
     def ready(self) -> bool:
         return bool(self.selected_roots)
+
+    @property
+    def backup_ready(self) -> bool:
+        return bool(self.backup_roots)
 
 
 @dataclass(frozen=True)
@@ -49,21 +53,21 @@ def load_index_context() -> IndexContext:
         selected_roots=[str(value) for value in state.get("selected_roots", [])],
         index_mode=str(state.get("index_mode", "未建立索引")),
         database_path=str(state.get("database_path", "")),
-        backup_root=current_backup_root(),
+        backup_roots=current_backup_roots(),
     )
 
 
 def run_index_build(selected_roots: List[str], task: TaskContext) -> IndexBuildResult:
     roots = [str(value).strip() for value in selected_roots if str(value).strip()]
     if not roots:
-        raise RuntimeError("请至少选择一个需要扫描的磁盘")
-    backup_root = current_backup_root()
-    if not backup_root:
-        raise RuntimeError("尚未设置备份根目录，请先到“设置”中配置后再创建索引")
+        raise RuntimeError("请至少选择一个需要建立索引的磁盘")
+    backup_roots = current_backup_roots()
+    if not backup_roots:
+        raise RuntimeError("尚未设置备份目录，请先到“设置”中配置后再创建索引")
 
     task.log("开始创建 FileCheck 专用 Everything 索引。")
     task.log("索引范围: " + "、".join(roots))
-    task.log(f"备份目录将自动排除: {backup_root}")
+    task.log("备份目录将自动排除: " + "、".join(backup_roots))
     task.set_progress(None, "正在配置专用 Everything 实例……")
 
     def progress(elapsed_seconds: float) -> None:
@@ -73,7 +77,8 @@ def run_index_build(selected_roots: List[str], task: TaskContext) -> IndexBuildR
 
     result: PortableIndexResult = configure_and_reindex(
         roots,
-        backup_root,
+        backup_roots[0],
+        additional_excluded_roots=backup_roots[1:],
         progress=progress,
     )
     task.raise_if_cancelled()
