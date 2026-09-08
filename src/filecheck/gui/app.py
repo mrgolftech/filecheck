@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Dict
+
 import customtkinter as ctk
 
 from .components import SidebarButton, StatusPill
@@ -27,8 +29,8 @@ class FileCheckApp(ctk.CTk):
         self.grid_rowconfigure(0, weight=1)
         self.grid_columnconfigure(1, weight=1)
 
-        self._nav_buttons: dict[str, SidebarButton] = {}
-        self._pages: dict[str, ctk.CTkFrame] = {}
+        self._nav_buttons: Dict[str, SidebarButton] = {}
+        self._pages: Dict[str, ctk.CTkFrame] = {}
 
         self._build_sidebar()
         self._build_content()
