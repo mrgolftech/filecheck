@@ -89,6 +89,24 @@ def current_appearance() -> str:
     return value if value in ("light", "dark") else "light"
 
 
+def save_appearance(appearance: str) -> str:
+    mode = str(appearance or "light").strip().lower()
+    if mode not in ("light", "dark"):
+        raise RuntimeError("界面主题只能选择浅色或暗色")
+    payload = _read_runtime_settings()
+    roots = current_backup_roots()
+    payload.update(
+        {
+            "schema_version": 2,
+            "backup_roots": roots,
+            "backup_root": roots[0] if roots else "",
+            "appearance": mode,
+        }
+    )
+    write_json(settings_path(), payload)
+    return mode
+
+
 def load_settings() -> SettingsData:
     rules_path = Path(cli._default_rules_path()).expanduser().resolve()
     rules = cli._load_rules(rules_path)
@@ -138,18 +156,21 @@ def _normalize_extensions(values: List[str]) -> List[str]:
     return result
 
 
+def _split_backup_roots(value: Union[str, List[str]]) -> List[str]:
+    if isinstance(value, list):
+        return [str(item) for item in value]
+    normalized = str(value or "").replace("；", "\n").replace(";", "\n")
+    return [line.strip() for line in normalized.splitlines() if line.strip()]
+
+
 def save_settings(
     backup_roots: Union[str, List[str]],
     keywords: Dict[str, List[str]],
     extensions: List[str],
     max_results_per_keyword: int = 100000,
-    appearance: str = "light",
+    appearance: Optional[str] = None,
 ) -> SettingsData:
-    if isinstance(backup_roots, str):
-        raw_roots = [backup_roots]
-    else:
-        raw_roots = list(backup_roots)
-    roots = _normalize_backup_roots(raw_roots)
+    roots = _normalize_backup_roots(_split_backup_roots(backup_roots))
     if not roots:
         raise RuntimeError("请至少设置一个备份根目录")
     for value in roots:
@@ -168,7 +189,7 @@ def save_settings(
     if not cleaned_extensions:
         raise RuntimeError("至少需要配置一种文件类型")
 
-    mode = str(appearance or "light").strip().lower()
+    mode = current_appearance() if appearance is None else str(appearance).strip().lower()
     if mode not in ("light", "dark"):
         raise RuntimeError("界面主题只能选择浅色或暗色")
 
