@@ -19,14 +19,21 @@ class PageHeader(ctk.CTkFrame):
             font=Typography.PAGE_TITLE,
             anchor="w",
         ).grid(row=0, column=0, sticky="ew")
-        ctk.CTkLabel(
+        self.description_label = ctk.CTkLabel(
             self,
             text=description,
             text_color=Palette.TEXT_SECONDARY,
             font=Typography.BODY,
             anchor="w",
             justify="left",
-        ).grid(row=1, column=0, sticky="ew", pady=(Spacing.XS, 0))
+            wraplength=620,
+        )
+        self.description_label.grid(row=1, column=0, sticky="ew", pady=(Spacing.XS, 0))
+        self.bind("<Configure>", self._resize_description, add="+")
+
+    def _resize_description(self, event) -> None:
+        width = max(240, int(getattr(event, "width", 0)) - Spacing.XS)
+        self.description_label.configure(wraplength=width)
 
 
 class Card(ctk.CTkFrame):
@@ -193,6 +200,7 @@ class EmptyState(Card):
             text_color=Palette.TEXT_SECONDARY,
             font=Typography.BODY,
             justify="center",
+            wraplength=620,
         ).grid(row=1, column=0, pady=(0, Spacing.XL), padx=Layout.CARD_PADDING)
 
 
