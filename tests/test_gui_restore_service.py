@@ -5,20 +5,13 @@ from pathlib import Path
 import pytest
 
 from filecheck.backup import create_backup
-from filecheck.gui.restore_service import (
-    inspect_restore_target,
-    run_restore,
-    run_restore_preflight,
-)
+from filecheck.gui import restore_service
+from filecheck.gui.restore_service import inspect_restore_target, run_restore, run_restore_preflight
 from filecheck.gui.task_runner import TaskCancelled
 
 
 class FakeTask:
-    def __init__(
-        self,
-        cancel_after_first_restore: bool = False,
-        cancel_during_verify: bool = False,
-    ) -> None:
+    def __init__(self, cancel_after_first_restore: bool = False, cancel_during_verify: bool = False) -> None:
         self.logs = []
         self.progress = []
         self.cancelled = False
@@ -69,6 +62,7 @@ def test_restore_service_supports_skip_rename_and_overwrite(tmp_path: Path) -> N
     skip = run_restore(backup_path, "skip", FakeTask())
     assert skip.restored == 0
     assert skip.skipped == 1
+    assert skip.skipped_error == 0
     assert source.read_text(encoding="utf-8") == "local-version"
 
     rename_preflight = run_restore_preflight(backup_path, "rename", FakeTask())
@@ -84,7 +78,35 @@ def test_restore_service_supports_skip_rename_and_overwrite(tmp_path: Path) -> N
     overwrite = run_restore(backup_path, "overwrite", FakeTask())
     assert overwrite.restored == 1
     assert overwrite.skipped == 0
+    assert overwrite.skipped_error == 0
     assert source.read_text(encoding="utf-8") == "backup-version"
+
+
+def test_overwrite_blocked_target_is_skipped_and_reported(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    source = tmp_path / "source.txt"
+    source.write_text("backup-version", encoding="utf-8")
+    backup_path = create_backup([source], tmp_path / "backup")
+    source.write_text("local-version", encoding="utf-8")
+
+    original_replace = restore_service.os.replace
+
+    def blocked_replace(src, dst):
+        if Path(dst) == source:
+            raise PermissionError("simulated sharing violation")
+        return original_replace(src, dst)
+
+    monkeypatch.setattr(restore_service.os, "replace", blocked_replace)
+    result = run_restore(backup_path, "overwrite", FakeTask())
+
+    assert result.restored == 0
+    assert result.skipped == 0
+    assert result.skipped_error == 1
+    assert result.skipped_report is not None
+    assert result.skipped_report.is_file()
+    report = result.skipped_report.read_text(encoding="utf-8-sig")
+    assert str(source) in report
+    assert "simulated sharing violation" in report
+    assert source.read_text(encoding="utf-8") == "local-version"
 
 
 def test_restore_cancel_during_verify_touches_no_target(tmp_path: Path) -> None:
