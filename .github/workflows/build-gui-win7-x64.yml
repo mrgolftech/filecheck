@@ -68,12 +68,16 @@ jobs:
       - name: Build advanced CLI executable
         shell: pwsh
         run: |
+          $ctkIcon = python -c "import pathlib,customtkinter; print(pathlib.Path(customtkinter.__file__).resolve().parent / 'assets' / 'icons' / 'CustomTkinter_icon_Windows.ico')"
+          if (-not (Test-Path $ctkIcon)) { throw "CustomTkinter Windows icon not found: $ctkIcon" }
+          Write-Host "Shared application icon: $ctkIcon"
           pyinstaller `
             --noconfirm `
             --clean `
             --onefile `
             --console `
             --name FileCheck `
+            --icon "$ctkIcon" `
             --paths src `
             --add-data "config/rules.json;config" `
             packaging/filecheck_entry.py
@@ -83,6 +87,8 @@ jobs:
         shell: pwsh
         run: |
           $ctkPath = python -c "import pathlib,customtkinter; print(pathlib.Path(customtkinter.__file__).resolve().parent)"
+          $ctkIcon = Join-Path $ctkPath "assets\icons\CustomTkinter_icon_Windows.ico"
+          if (-not (Test-Path $ctkIcon)) { throw "CustomTkinter Windows icon not found: $ctkIcon" }
           Write-Host "CustomTkinter package: $ctkPath"
           pyinstaller `
             --noconfirm `
@@ -90,6 +96,7 @@ jobs:
             --onedir `
             --windowed `
             --name FileCheck-GUI-runtime `
+            --icon "$ctkIcon" `
             --paths src `
             --hidden-import darkdetect `
             --add-data "config/rules.json;config" `
@@ -100,13 +107,18 @@ jobs:
       - name: Build native root GUI launcher
         shell: pwsh
         run: |
+          $ctkIcon = python -c "import pathlib,customtkinter; print(pathlib.Path(customtkinter.__file__).resolve().parent / 'assets' / 'icons' / 'CustomTkinter_icon_Windows.ico')"
+          if (-not (Test-Path $ctkIcon)) { throw "CustomTkinter Windows icon not found: $ctkIcon" }
+          Copy-Item $ctkIcon "packaging\FileCheck.ico" -Force
+          '1 ICON "packaging\FileCheck.ico"' | Set-Content -Encoding ASCII "packaging\gui_launcher.rc"
+
           $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
           if (-not (Test-Path $vswhere)) { throw "vswhere.exe not found" }
           $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
           if (-not $vs) { throw "Visual C++ build tools not found" }
           $vcvars = Join-Path $vs "VC\Auxiliary\Build\vcvars64.bat"
           if (-not (Test-Path $vcvars)) { throw "vcvars64.bat not found" }
-          cmd /c "`"$vcvars`" && cl /nologo /O2 /MT /DUNICODE /D_UNICODE /Fe:dist\FileCheck-GUI.exe packaging\gui_launcher.c /link /SUBSYSTEM:WINDOWS shell32.lib"
+          cmd /c "`"$vcvars`" && rc /nologo /fo dist\gui_launcher.res packaging\gui_launcher.rc && cl /nologo /O2 /MT /DUNICODE /D_UNICODE /Fe:dist\FileCheck-GUI.exe packaging\gui_launcher.c dist\gui_launcher.res /link /SUBSYSTEM:WINDOWS shell32.lib"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           if (-not (Test-Path "dist\FileCheck-GUI.exe")) { throw "native FileCheck-GUI.exe was not produced" }
 
