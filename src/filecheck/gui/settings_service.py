@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Union
 
 from filecheck import cli
 from filecheck.portable_everything import load_index_state
@@ -11,12 +11,17 @@ from filecheck.util import read_json, runtime_dir, write_json
 
 @dataclass(frozen=True)
 class SettingsData:
-    backup_root: str
+    backup_roots: List[str]
     keywords: Dict[str, List[str]]
     extensions: List[str]
     max_results_per_keyword: int
+    appearance: str
     rules_path: Path
     settings_path: Path
+
+    @property
+    def backup_root(self) -> str:
+        return self.backup_roots[0] if self.backup_roots else ""
 
 
 def settings_path() -> Path:
@@ -34,17 +39,54 @@ def _read_runtime_settings() -> dict:
     return payload if isinstance(payload, dict) else {}
 
 
-def current_backup_root() -> Optional[str]:
+def _normalize_backup_roots(values: List[str]) -> List[str]:
+    result: List[str] = []
+    seen = set()
+    for raw in values:
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        root = Path(text).expanduser().resolve()
+        key = str(root).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(str(root))
+    return result
+
+
+def current_backup_roots() -> List[str]:
     payload = _read_runtime_settings()
-    value = str(payload.get("backup_root") or "").strip()
-    if value:
-        return value
+    configured = payload.get("backup_roots")
+    if isinstance(configured, list):
+        roots = _normalize_backup_roots([str(value) for value in configured])
+        if roots:
+            return roots
+    legacy = str(payload.get("backup_root") or "").strip()
+    if legacy:
+        return _normalize_backup_roots([legacy])
+
     try:
         state = load_index_state(required=False) or {}
     except Exception:
         state = {}
-    value = str(state.get("backup_root") or "").strip()
-    return value or None
+    indexed = state.get("backup_roots")
+    if isinstance(indexed, list):
+        roots = _normalize_backup_roots([str(value) for value in indexed])
+        if roots:
+            return roots
+    legacy = str(state.get("backup_root") or "").strip()
+    return _normalize_backup_roots([legacy]) if legacy else []
+
+
+def current_backup_root() -> Optional[str]:
+    roots = current_backup_roots()
+    return roots[0] if roots else None
+
+
+def current_appearance() -> str:
+    value = str(_read_runtime_settings().get("appearance") or "light").strip().lower()
+    return value if value in ("light", "dark") else "light"
 
 
 def load_settings() -> SettingsData:
@@ -59,10 +101,11 @@ def load_settings() -> SettingsData:
         keywords.setdefault(level, [])
     extensions = _normalize_extensions([str(value) for value in rules.get("extensions", [])])
     return SettingsData(
-        backup_root=current_backup_root() or "",
+        backup_roots=current_backup_roots(),
         keywords=keywords,
         extensions=extensions,
         max_results_per_keyword=int(rules.get("max_results_per_keyword", 100000)),
+        appearance=current_appearance(),
         rules_path=rules_path,
         settings_path=settings_path(),
     )
@@ -96,18 +139,24 @@ def _normalize_extensions(values: List[str]) -> List[str]:
 
 
 def save_settings(
-    backup_root: str,
+    backup_roots: Union[str, List[str]],
     keywords: Dict[str, List[str]],
     extensions: List[str],
     max_results_per_keyword: int = 100000,
+    appearance: str = "light",
 ) -> SettingsData:
-    root_text = str(backup_root or "").strip()
-    if not root_text:
-        raise RuntimeError("请设置备份根目录")
-    root = Path(root_text).expanduser().resolve()
-    root.mkdir(parents=True, exist_ok=True)
-    if not root.is_dir():
-        raise RuntimeError(f"备份路径不是有效目录: {root}")
+    if isinstance(backup_roots, str):
+        raw_roots = [backup_roots]
+    else:
+        raw_roots = list(backup_roots)
+    roots = _normalize_backup_roots(raw_roots)
+    if not roots:
+        raise RuntimeError("请至少设置一个备份根目录")
+    for value in roots:
+        root = Path(value)
+        root.mkdir(parents=True, exist_ok=True)
+        if not root.is_dir():
+            raise RuntimeError(f"备份路径不是有效目录: {root}")
 
     cleaned_keywords: Dict[str, List[str]] = {}
     for level in ("high", "sensitive", "review"):
@@ -118,6 +167,10 @@ def save_settings(
     cleaned_extensions = _normalize_extensions(extensions)
     if not cleaned_extensions:
         raise RuntimeError("至少需要配置一种文件类型")
+
+    mode = str(appearance or "light").strip().lower()
+    if mode not in ("light", "dark"):
+        raise RuntimeError("界面主题只能选择浅色或暗色")
 
     rules_path = Path(cli._default_rules_path()).expanduser().resolve()
     write_json(
@@ -131,8 +184,10 @@ def save_settings(
     write_json(
         settings_path(),
         {
-            "schema_version": 1,
-            "backup_root": str(root),
+            "schema_version": 2,
+            "backup_roots": roots,
+            "backup_root": roots[0],
+            "appearance": mode,
         },
     )
     return load_settings()
