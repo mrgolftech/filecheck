@@ -4,13 +4,13 @@ import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from filecheck import backup, cli
 from filecheck.portable_everything import load_index_state
 
 from .scan_service import ScanResult
-from .settings_service import current_backup_root
+from .settings_service import current_backup_roots
 from .task_runner import TaskContext
 
 
@@ -40,14 +40,23 @@ class BackupResult:
     throughput_mib_s: Optional[float]
 
 
-def suggested_destination() -> Optional[str]:
-    return current_backup_root()
+def suggested_destination() -> Union[None, str, List[str]]:
+    roots = current_backup_roots()
+    if not roots:
+        return None
+    if len(roots) == 1:
+        return roots[0]
+    return roots
 
 
 def _normalized_path(value: Optional[str]) -> str:
     if not value:
         return ""
     return os.path.normcase(os.path.abspath(os.path.expanduser(str(value))))
+
+
+def _normalized_paths(values: List[str]) -> List[str]:
+    return [_normalized_path(value) for value in values]
 
 
 def _validate_scan_basis(scan_result: ScanResult) -> None:
@@ -69,8 +78,15 @@ def _validate_scan_basis(scan_result: ScanResult) -> None:
     if scanned_roots != current_roots:
         raise RuntimeError("当前索引范围与扫描时不同，请重新扫描后再备份")
 
-    if _normalized_path(payload.get("backup_root")) != _normalized_path(current_backup_root()):
-        raise RuntimeError("备份根目录已经修改，请重新扫描后再备份")
+    configured = current_backup_roots()
+    if not configured:
+        raise RuntimeError("尚未在“设置”中配置备份目录")
+    scanned_backup_roots = payload.get("backup_roots")
+    if not isinstance(scanned_backup_roots, list):
+        legacy = str(payload.get("backup_root") or "").strip()
+        scanned_backup_roots = [legacy] if legacy else []
+    if _normalized_paths([str(value) for value in scanned_backup_roots]) != _normalized_paths(configured):
+        raise RuntimeError("备份目录设置已经修改，请重新扫描后再备份")
 
 
 def _source_paths(scan_result: ScanResult) -> List[str]:
@@ -97,12 +113,15 @@ def _resolve_destination(value: str) -> Path:
     if not text:
         raise RuntimeError("尚未设置备份根目录，请先到“设置”中配置")
     destination = Path(text).expanduser().resolve()
+    configured = current_backup_roots()
+    if not configured:
+        raise RuntimeError("尚未在“设置”中配置备份目录")
+    allowed = {_normalized_path(item) for item in configured}
+    if _normalized_path(str(destination)) not in allowed:
+        raise RuntimeError("备份目标必须从“设置”中保存的备份目录中选择")
     destination.mkdir(parents=True, exist_ok=True)
     if not destination.is_dir():
         raise RuntimeError(f"备份目标不是有效目录: {destination}")
-    configured = current_backup_root()
-    if configured and _normalized_path(str(destination)) != _normalized_path(configured):
-        raise RuntimeError("备份页面只能使用“设置”中保存的统一备份根目录")
     return destination
 
 
