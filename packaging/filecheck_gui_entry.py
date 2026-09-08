@@ -48,12 +48,14 @@ def _bootstrap_frozen_runtime() -> None:
 
 _bootstrap_frozen_runtime()
 
-from filecheck.gui.app import FileCheckApp  # noqa: E402
-from filecheck.gui.entry import main  # noqa: E402
+from filecheck.gui.entry import create_app, main  # noqa: E402
 
 
 def _smoke_test() -> int:
-    app = FileCheckApp()
+    # Construct through the real GUI entry so administrator detection, theme
+    # loading, runtime policy and backup-batch selectors are exercised in the
+    # packaged executable as well as in source tests.
+    app = create_app()
     try:
         app.update_idletasks()
     finally:
