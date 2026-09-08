@@ -9,8 +9,9 @@ from typing import Any, Dict, List, Optional
 from filecheck import cli, db_persistence
 from filecheck.everything import FILECHECK_INSTANCE, scan_keywords
 from filecheck.portable_everything import load_index_state
-from filecheck.util import now_iso, write_json
+from filecheck.util import now_iso, program_dir, write_json
 
+from .settings_service import current_backup_root
 from .task_runner import TaskContext
 
 
@@ -54,12 +55,16 @@ def load_context() -> ScanContextInfo:
         if isinstance(values, list)
     }
     extensions = [str(value).lstrip(".") for value in rules.get("extensions", []) if str(value).strip()]
+    exclusions = [str(value) for value in state.get("excluded_roots", [])]
+    backup_root = current_backup_root()
+    if backup_root and backup_root not in exclusions:
+        exclusions.append(backup_root)
     return ScanContextInfo(
         rules_path=rules_path,
         keywords=keywords,
         extensions=extensions,
         selected_roots=[str(value) for value in state.get("selected_roots", [])],
-        excluded_roots=[str(value) for value in state.get("excluded_roots", [])],
+        excluded_roots=exclusions,
         index_mode=str(state.get("index_mode", "未建立索引")),
     )
 
@@ -94,13 +99,16 @@ def run_scan(request: ScanRequest, task: TaskContext) -> ScanResult:
 
     selected_roots = [str(value) for value in state.get("selected_roots", [])]
     exclusions = [str(value) for value in state.get("excluded_roots", [])]
+    for extra in (str(program_dir()), current_backup_root()):
+        if extra and extra not in exclusions:
+            exclusions.append(extra)
     scope = _validate_scope(request.path_prefix, selected_roots)
 
     task.log("索引范围: " + ("、".join(selected_roots) if selected_roots else "未记录"))
     if scope:
         task.log(f"本次扫描范围: {scope}")
     else:
-        task.log("本次扫描范围: 全部已索引目录")
+        task.log("本次扫描范围: 全部已索引磁盘")
     task.log(f"规则文件: {rules_path}")
     task.set_progress(None, "正在连接 FileCheck 专用 Everything 实例……")
 
