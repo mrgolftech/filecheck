@@ -139,34 +139,32 @@ def _validated_cached_preflight(backup_path: Path, *, progress=None) -> dict:
     return cached
 
 
-def _unlink_with_readonly_retry(source: Path) -> None:
-    """Delete a file, clearing only the Windows-style read-only bit when needed."""
+def _unlink_ignoring_readonly(source: Path) -> None:
+    """Delete while treating the Windows read-only attribute as non-blocking.
+
+    Windows DeleteFile has no "ignore read-only" flag.  The practical equivalent
+    is to clear only the read-only/write-protect bit before deletion.  If delete
+    still fails (ACL, lock, antivirus, etc.), restore the original mode when the
+    file still exists so unrelated attributes are not silently changed.
+    """
+    original_mode = source.stat().st_mode
+    changed_readonly = not bool(original_mode & stat.S_IWRITE)
+    if changed_readonly:
+        source.chmod(original_mode | stat.S_IWRITE)
     try:
         source.unlink()
-        return
-    except FileNotFoundError:
-        raise
-    except OSError as first:
-        access_denied = isinstance(first, PermissionError) or getattr(first, "winerror", None) == 5
-        if not access_denied:
-            raise
-        try:
-            original_mode = source.stat().st_mode
-        except OSError:
-            raise first
-        if original_mode & stat.S_IWRITE:
-            raise first
-        try:
-            source.chmod(original_mode | stat.S_IWRITE)
-            source.unlink()
-            return
-        except OSError:
+    except OSError:
+        if changed_readonly:
             try:
                 if source.exists():
                     source.chmod(original_mode)
             except OSError:
                 pass
-            raise
+        raise
+
+
+# Backward-compatible internal alias for older tests/callers.
+_unlink_with_readonly_retry = _unlink_ignoring_readonly
 
 
 def _remove_one_fast(row: dict, snapshot: dict[str, int]) -> None:
@@ -188,7 +186,7 @@ def _remove_one_fast(row: dict, snapshot: dict[str, int]) -> None:
             row["state"] = "failed"
             row["error"] = "源文件在整批 SHA-256 复核通过后发生变化，已跳过"
             return
-        _unlink_with_readonly_retry(source)
+        _unlink_ignoring_readonly(source)
     except FileNotFoundError:
         row["state"] = "already_absent"
         row["error"] = None
@@ -251,7 +249,7 @@ def _remove_one_verified(row: dict, manifest_item: dict) -> None:
             row["error"] = reason
         return
     try:
-        _unlink_with_readonly_retry(source)
+        _unlink_ignoring_readonly(source)
     except FileNotFoundError:
         row["state"] = "already_absent"
         row["error"] = None
