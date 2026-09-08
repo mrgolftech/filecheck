@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import List, Optional
 
 from filecheck import db_persistence
@@ -17,10 +18,12 @@ class IndexContext:
     index_mode: str
     database_path: str
     backup_root: Optional[str]
+    database_ready: bool = False
+    database_issue: str = ""
 
     @property
     def ready(self) -> bool:
-        return bool(self.selected_roots) and bool(self.backup_root)
+        return bool(self.selected_roots) and bool(self.backup_root) and self.database_ready
 
     @property
     def backup_ready(self) -> bool:
@@ -38,17 +41,40 @@ class IndexBuildResult:
     es_version: str
 
 
+def _database_health(state: dict) -> tuple[bool, str, str]:
+    recorded = str(state.get("database_path", "") or "")
+    expected = db_persistence.database_path()
+    if not recorded:
+        return False, str(expected), "索引状态中没有数据库路径"
+    try:
+        recorded_path = Path(recorded).expanduser().resolve()
+        expected_path = expected.resolve()
+    except (OSError, RuntimeError):
+        return False, recorded, "索引数据库路径无效"
+    if recorded_path != expected_path:
+        return False, recorded, f"旧索引记录指向 {recorded_path.name}，当前要求 {expected_path.name}"
+    try:
+        if not expected_path.is_file() or expected_path.stat().st_size <= 0:
+            return False, str(expected_path), "索引数据库尚未成功写入磁盘"
+    except OSError:
+        return False, str(expected_path), "无法访问索引数据库"
+    return True, str(expected_path), ""
+
+
 def load_index_context() -> IndexContext:
     try:
         state = load_index_state(required=False) or {}
     except Exception:
         state = {}
+    database_ready, database_path, database_issue = _database_health(state)
     return IndexContext(
         drives=list_windows_drives(),
         selected_roots=[str(value) for value in state.get("selected_roots", [])],
         index_mode=str(state.get("index_mode", "未建立索引")),
-        database_path=str(state.get("database_path", "")),
+        database_path=database_path,
         backup_root=current_backup_root(),
+        database_ready=database_ready,
+        database_issue=database_issue,
     )
 
 
@@ -63,6 +89,7 @@ def run_index_build(selected_roots: List[str], task: TaskContext) -> IndexBuildR
     task.log("开始创建 FileCheck 专用 Everything 索引。")
     task.log("索引范围: " + "、".join(roots))
     task.log(f"统一备份根目录将自动排除: {backup_root}")
+    task.log(f"固定数据库路径: {db_persistence.database_path()}")
     task.set_progress(None, "正在配置专用 Everything 实例……")
 
     def progress(elapsed_seconds: float) -> None:
@@ -70,16 +97,16 @@ def run_index_build(selected_roots: List[str], task: TaskContext) -> IndexBuildR
         elapsed = max(0.0, float(elapsed_seconds))
         task.set_progress(None, f"正在创建索引，已运行 {elapsed:.0f} 秒……")
 
-    # Always use the hardened persistence wrapper.  It pins the dedicated
-    # FileCheck database path and explicitly flushes the completed Everything
-    # index to disk; GUI indexing must never bypass this path.
     result: PortableIndexResult = db_persistence.configure_and_reindex(
         roots,
         backup_root,
         progress=progress,
     )
     task.raise_if_cancelled()
-    task.set_progress(1.0, "索引创建完成")
+    db = Path(result.database_path)
+    if not db.is_file() or db.stat().st_size <= 0:
+        raise RuntimeError(f"索引完成但数据库未可靠落盘: {db}")
+    task.set_progress(1.0, "索引创建并写盘完成")
     task.log(f"索引数据库: {result.database_path}")
     task.log(f"Everything {result.status.everything_version} / ES {result.status.es_version}")
     return IndexBuildResult(
