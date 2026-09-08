@@ -6,16 +6,7 @@ from tkinter import filedialog
 
 import customtkinter as ctk
 
-from .components import (
-    Card,
-    DangerButton,
-    DangerConfirmDialog,
-    MetricCard,
-    PageHeader,
-    PrimaryButton,
-    SecondaryButton,
-    StatusPill,
-)
+from .components import Card, DangerButton, DangerConfirmDialog, MetricCard, PageHeader, PrimaryButton, SecondaryButton, StatusPill
 from .tokens import Layout, Palette, Radius, Spacing, Typography
 
 
@@ -56,22 +47,9 @@ class RestorePage(ctk.CTkFrame):
         target_card.grid(row=1, column=0, sticky="ew", pady=(Spacing.LG, 0))
         target_card.grid_columnconfigure(0, weight=1)
         header = ctk.CTkFrame(target_card, fg_color="transparent")
-        header.grid(
-            row=0,
-            column=0,
-            columnspan=3,
-            sticky="ew",
-            padx=Layout.CARD_PADDING,
-            pady=(Layout.CARD_PADDING, Spacing.SM),
-        )
+        header.grid(row=0, column=0, columnspan=3, sticky="ew", padx=Layout.CARD_PADDING, pady=(Layout.CARD_PADDING, Spacing.SM))
         header.grid_columnconfigure(0, weight=1)
-        ctk.CTkLabel(
-            header,
-            text="备份批次",
-            text_color=Palette.TEXT,
-            font=Typography.CARD_TITLE,
-            anchor="w",
-        ).grid(row=0, column=0, sticky="w")
+        ctk.CTkLabel(header, text="备份批次", text_color=Palette.TEXT, font=Typography.CARD_TITLE, anchor="w").grid(row=0, column=0, sticky="w")
         self.state_pill = StatusPill(header, "等待载入", tone="neutral")
         self.state_pill.grid(row=0, column=1, sticky="e")
 
@@ -98,28 +76,16 @@ class RestorePage(ctk.CTkFrame):
             font=Typography.CAPTION,
             anchor="w",
             justify="left",
-            wraplength=820,
+            wraplength=850,
         )
-        self.target_label.grid(
-            row=2,
-            column=0,
-            columnspan=3,
-            sticky="ew",
-            padx=Layout.CARD_PADDING,
-            pady=(Spacing.SM, Layout.CARD_PADDING),
-        )
+        self.target_label.grid(row=2, column=0, columnspan=3, sticky="ew", padx=Layout.CARD_PADDING, pady=(Spacing.SM, Layout.CARD_PADDING))
 
         preflight_card = Card(self)
         preflight_card.grid(row=2, column=0, sticky="ew", pady=(Spacing.MD, 0))
         preflight_card.grid_columnconfigure(0, weight=1)
-        ctk.CTkLabel(
-            preflight_card,
-            text="恢复策略与预检",
-            text_color=Palette.TEXT,
-            font=Typography.CARD_TITLE,
-            anchor="w",
-        ).grid(row=0, column=0, sticky="w", padx=Layout.CARD_PADDING, pady=(Layout.CARD_PADDING, Spacing.SM))
-
+        ctk.CTkLabel(preflight_card, text="恢复策略与预检", text_color=Palette.TEXT, font=Typography.CARD_TITLE, anchor="w").grid(
+            row=0, column=0, sticky="w", padx=Layout.CARD_PADDING, pady=(Layout.CARD_PADDING, Spacing.SM)
+        )
         choices = ctk.CTkFrame(preflight_card, fg_color="transparent")
         choices.grid(row=1, column=0, sticky="ew", padx=Layout.CARD_PADDING)
         self.skip_radio = self._radio(choices, "跳过已有文件（推荐）", "skip")
@@ -136,15 +102,9 @@ class RestorePage(ctk.CTkFrame):
             font=Typography.SMALL,
             anchor="w",
             justify="left",
-            wraplength=820,
+            wraplength=850,
         )
-        self.strategy_label.grid(
-            row=2,
-            column=0,
-            sticky="ew",
-            padx=Layout.CARD_PADDING,
-            pady=(Spacing.SM, Spacing.MD),
-        )
+        self.strategy_label.grid(row=2, column=0, sticky="ew", padx=Layout.CARD_PADDING, pady=(Spacing.SM, Spacing.MD))
 
         metrics = ctk.CTkFrame(preflight_card, fg_color="transparent")
         metrics.grid(row=3, column=0, sticky="ew", padx=Layout.CARD_PADDING)
@@ -154,71 +114,29 @@ class RestorePage(ctk.CTkFrame):
         self.metric_size = MetricCard(metrics, "备份数据")
         self.metric_conflicts = MetricCard(metrics, "目标冲突", tone="warning")
         self.metric_action = MetricCard(metrics, "预计恢复/跳过")
-        for column, metric in enumerate(
-            [self.metric_files, self.metric_size, self.metric_conflicts, self.metric_action]
-        ):
+        for column, metric in enumerate([self.metric_files, self.metric_size, self.metric_conflicts, self.metric_action]):
             metric.grid(row=0, column=column, sticky="nsew", padx=(0 if column == 0 else Spacing.XS, 0))
 
         actions = ctk.CTkFrame(preflight_card, fg_color="transparent")
-        actions.grid(
-            row=4,
-            column=0,
-            sticky="w",
-            padx=Layout.CARD_PADDING,
-            pady=(Spacing.MD, Layout.CARD_PADDING),
-        )
-        self.preflight_button = SecondaryButton(
-            actions,
-            "验证备份与目标",
-            command=self._preflight_action,
-            width=140,
-            state="disabled",
-        )
+        actions.grid(row=4, column=0, sticky="w", padx=Layout.CARD_PADDING, pady=(Spacing.MD, Layout.CARD_PADDING))
+        self.preflight_button = SecondaryButton(actions, "验证备份与目标", command=self._preflight_action, width=140, state="disabled")
         self.preflight_button.grid(row=0, column=0)
-        self.start_button = PrimaryButton(
-            actions,
-            "开始恢复",
-            command=self._restore_action,
-            width=120,
-            state="disabled",
-        )
+        self.start_button = PrimaryButton(actions, "开始恢复", command=self._restore_action, width=120, state="disabled")
         self.start_button.grid(row=0, column=1, padx=(Spacing.SM, 0))
-        self.overwrite_button = DangerButton(
-            actions,
-            "覆盖并恢复",
-            command=self._restore_action,
-            width=120,
-            state="disabled",
-        )
+        self.overwrite_button = DangerButton(actions, "覆盖并恢复", command=self._restore_action, width=120, state="disabled")
         self.overwrite_button.grid(row=0, column=1, padx=(Spacing.SM, 0))
         self.overwrite_button.grid_remove()
-        self.cancel_button = SecondaryButton(
-            actions,
-            "取消任务",
-            command=self._cancel_action,
-            width=110,
-            state="disabled",
-        )
+        self.cancel_button = SecondaryButton(actions, "取消任务", command=self._cancel_action, width=110, state="disabled")
         self.cancel_button.grid(row=0, column=2, padx=(Spacing.SM, 0))
 
         run_card = Card(self)
         run_card.grid(row=3, column=0, sticky="nsew", pady=(Spacing.MD, 0))
         run_card.grid_columnconfigure(0, weight=1)
-        run_card.grid_rowconfigure(3, weight=1)
-        ctk.CTkLabel(
-            run_card,
-            text="执行状态",
-            text_color=Palette.TEXT,
-            font=Typography.CARD_TITLE,
-            anchor="w",
-        ).grid(row=0, column=0, sticky="w", padx=Layout.CARD_PADDING, pady=(Layout.CARD_PADDING, Spacing.SM))
-        self.progress_label = ctk.CTkLabel(
-            run_card,
-            text="等待操作",
-            text_color=Palette.TEXT_SECONDARY,
-            font=Typography.CAPTION,
-            anchor="w",
+        run_card.grid_rowconfigure(4, weight=1)
+        ctk.CTkLabel(run_card, text="执行状态", text_color=Palette.TEXT, font=Typography.CARD_TITLE, anchor="w").grid(
+            row=0, column=0, sticky="w", padx=Layout.CARD_PADDING, pady=(Layout.CARD_PADDING, Spacing.SM)
         )
+        self.progress_label = ctk.CTkLabel(run_card, text="等待操作", text_color=Palette.TEXT_SECONDARY, font=Typography.CAPTION, anchor="w")
         self.progress_label.grid(row=1, column=0, sticky="ew", padx=Layout.CARD_PADDING)
         self.progress_bar = ctk.CTkProgressBar(
             run_card,
@@ -228,14 +146,18 @@ class RestorePage(ctk.CTkFrame):
             fg_color=Palette.SURFACE_SUBTLE,
             progress_color=Palette.PRIMARY,
         )
-        self.progress_bar.grid(
-            row=2,
-            column=0,
-            sticky="ew",
-            padx=Layout.CARD_PADDING,
-            pady=(Spacing.XS, Spacing.SM),
-        )
+        self.progress_bar.grid(row=2, column=0, sticky="ew", padx=Layout.CARD_PADDING, pady=(Spacing.XS, Spacing.SM))
         self.progress_bar.set(0)
+        self.result_label = ctk.CTkLabel(
+            run_card,
+            text="",
+            text_color=Palette.TEXT_SECONDARY,
+            font=Typography.SMALL,
+            anchor="w",
+            justify="left",
+            wraplength=850,
+        )
+        self.result_label.grid(row=3, column=0, sticky="ew", padx=Layout.CARD_PADDING, pady=(0, Spacing.XS))
         self.log_box = ctk.CTkTextbox(
             run_card,
             fg_color=Palette.SURFACE_SUBTLE,
@@ -244,15 +166,9 @@ class RestorePage(ctk.CTkFrame):
             text_color=Palette.TEXT_SECONDARY,
             font=Typography.SMALL,
             wrap="word",
-            height=120,
+            height=110,
         )
-        self.log_box.grid(
-            row=3,
-            column=0,
-            sticky="nsew",
-            padx=Layout.CARD_PADDING,
-            pady=(0, Layout.CARD_PADDING),
-        )
+        self.log_box.grid(row=4, column=0, sticky="nsew", padx=Layout.CARD_PADDING, pady=(0, Layout.CARD_PADDING))
         self.log_box.configure(state="disabled")
         self._refresh_controls()
 
@@ -282,10 +198,7 @@ class RestorePage(ctk.CTkFrame):
         self.backup_path.set(str(info.backup_path))
         self.state_pill.set_tone("info", "已载入")
         self.target_label.configure(
-            text=(
-                f"批次：{info.batch_id}    文件数：{info.file_count}    数据量：{_format_bytes(info.total_bytes)}\n"
-                "下一步执行全量备份校验并检查原始恢复路径冲突。"
-            ),
+            text=f"批次：{info.batch_id}    文件数：{info.file_count}    数据量：{_format_bytes(info.total_bytes)}\n下一步执行全量备份校验并检查原始恢复路径冲突。",
             text_color=Palette.TEXT_SECONDARY,
         )
         self.metric_files.set_value(str(info.file_count))
@@ -306,6 +219,7 @@ class RestorePage(ctk.CTkFrame):
         self._busy = True
         self._preflight = None
         self._clear_log()
+        self.result_label.configure(text="")
         self.progress_bar.stop()
         self.progress_bar.configure(mode="determinate")
         self.progress_bar.set(0)
@@ -320,21 +234,19 @@ class RestorePage(ctk.CTkFrame):
         self.metric_size.set_value(_format_bytes(result.total_bytes))
         self.metric_conflicts.set_value(str(result.conflicts), "warning" if result.conflicts else "success")
         self.metric_action.set_value(f"{result.expected_restored}/{result.expected_skipped}")
-        self.progress_bar.stop()
-        self.progress_bar.configure(mode="determinate")
         self.progress_bar.set(1.0)
         self.progress_label.configure(text="恢复预检通过，可以开始恢复", text_color=Palette.SUCCESS)
         if result.conflict == "overwrite" and result.conflicts:
             self.strategy_label.configure(
-                text=f"警告：将覆盖 {result.conflicts} 个当前已存在目标。正式执行前必须输入 OVERWRITE 二次确认。",
+                text=(
+                    f"将尝试覆盖 {result.conflicts} 个已有目标。正式执行前必须输入 OVERWRITE。"
+                    "若目标被占用或无权限且原文件尚未被替换，将安全跳过并写入恢复跳过清单。"
+                ),
                 text_color=Palette.DANGER,
             )
         elif result.conflict == "rename" and result.conflicts:
-            self.strategy_label.configure(
-                text=f"将保留 {result.conflicts} 个现有文件，并为对应备份内容生成新的恢复文件名。",
-                text_color=Palette.WARNING,
-            )
-        elif result.conflict == "skip":
+            self.strategy_label.configure(text=f"将保留 {result.conflicts} 个现有文件，并为备份内容生成新文件名。", text_color=Palette.WARNING)
+        else:
             self.strategy_label.configure(
                 text=f"将恢复 {result.expected_restored} 个缺失文件，跳过 {result.expected_skipped} 个已有目标。",
                 text_color=Palette.SUCCESS,
@@ -344,11 +256,12 @@ class RestorePage(ctk.CTkFrame):
     def begin_restore(self) -> None:
         self._busy = True
         self._clear_log()
+        self.result_label.configure(text="")
         self.progress_bar.stop()
         self.progress_bar.configure(mode="indeterminate")
         self.progress_bar.start()
         self.progress_label.configure(text="正在再次校验备份并恢复文件……", text_color=Palette.PRIMARY)
-        self.append_log("正式恢复已启动；每个恢复文件落盘后都会执行最终 SHA-256 校验。")
+        self.append_log("正式恢复已启动；每个成功落盘文件都会执行最终 SHA-256 校验。")
         self._refresh_controls()
 
     def finish_result(self, result) -> None:
@@ -357,13 +270,21 @@ class RestorePage(ctk.CTkFrame):
         self.progress_bar.stop()
         self.progress_bar.configure(mode="determinate")
         self.progress_bar.set(1.0)
-        self.progress_label.configure(
-            text=f"恢复完成：恢复 {result.restored}，跳过 {result.skipped}",
-            text_color=Palette.SUCCESS,
-        )
-        self.append_log(
-            f"恢复完成：restored={result.restored}, skipped={result.skipped}, elapsed={result.elapsed_seconds:.1f}s"
-        )
+        blocked = int(getattr(result, "skipped_error", 0))
+        report = getattr(result, "skipped_report", None)
+        if blocked:
+            self.progress_label.configure(text=f"恢复完成，但有 {blocked} 个文件无法覆盖并已跳过", text_color=Palette.WARNING)
+            report_text = f"\n跳过清单：{report}" if report else ""
+            self.result_label.configure(
+                text=f"成功恢复：{result.restored}    普通跳过：{result.skipped}    无法覆盖：{blocked}{report_text}",
+                text_color=Palette.WARNING,
+            )
+            self.append_log(f"恢复完成但存在跳过项：blocked={blocked}")
+            if report:
+                self.append_log(f"无法覆盖文件清单：{report}")
+        else:
+            self.progress_label.configure(text=f"恢复完成：恢复 {result.restored}，跳过 {result.skipped}", text_color=Palette.SUCCESS)
+            self.result_label.configure(text=f"恢复完成并通过最终 SHA-256 校验；耗时 {result.elapsed_seconds:.1f} 秒", text_color=Palette.SUCCESS)
         self._refresh_controls()
 
     def update_progress(self, progress, message: str = "") -> None:
@@ -385,6 +306,7 @@ class RestorePage(ctk.CTkFrame):
         self.progress_bar.configure(mode="determinate")
         self.progress_bar.set(0)
         self.progress_label.configure(text=f"恢复任务失败：{message}", text_color=Palette.DANGER)
+        self.result_label.configure(text="恢复未正常完成，请核对日志和目标文件状态。", text_color=Palette.DANGER)
         self.append_log(f"错误：{message}")
         self._refresh_controls()
 
@@ -438,17 +360,14 @@ class RestorePage(ctk.CTkFrame):
                 self._info = None
                 self._preflight = None
                 self.state_pill.set_tone("neutral", "需要重新载入")
-                self.target_label.configure(
-                    text="备份路径已经变化，请重新点击“载入备份”后再执行恢复预检。",
-                    text_color=Palette.WARNING,
-                )
+                self.target_label.configure(text="备份路径已经变化，请重新点击“载入备份”后再执行恢复预检。", text_color=Palette.WARNING)
                 self._reset_metrics()
         self._invalidate_preflight()
         mode = self.conflict.get()
         descriptions = {
             "skip": ("跳过：目标已存在时保持原文件不动；仅恢复当前不存在的文件。", Palette.TEXT_SECONDARY),
             "rename": ("重命名：保留当前文件，把备份内容恢复为新的不冲突文件名。", Palette.WARNING),
-            "overwrite": ("覆盖：使用备份内容替换当前已有文件。该策略可能丢失现有修改。", Palette.DANGER),
+            "overwrite": ("覆盖：尝试用备份替换已有文件；无法安全替换的目标将跳过并记录。", Palette.DANGER),
         }
         text, color = descriptions.get(mode, descriptions["skip"])
         self.strategy_label.configure(text=text, text_color=color)
@@ -456,18 +375,10 @@ class RestorePage(ctk.CTkFrame):
 
     def _refresh_controls(self) -> None:
         if self._busy:
-            self.path_entry.configure(state="disabled")
-            self.browse_button.configure(state="disabled")
-            self.load_button.configure(state="disabled")
-            self.skip_radio.configure(state="disabled")
-            self.rename_radio.configure(state="disabled")
-            self.overwrite_radio.configure(state="disabled")
-            self.preflight_button.configure(state="disabled")
-            self.start_button.configure(state="disabled")
-            self.overwrite_button.configure(state="disabled")
+            for widget in (self.path_entry, self.browse_button, self.load_button, self.skip_radio, self.rename_radio, self.overwrite_radio, self.preflight_button, self.start_button, self.overwrite_button):
+                widget.configure(state="disabled")
             self.cancel_button.configure(state="normal")
             return
-
         self.path_entry.configure(state="normal")
         self.browse_button.configure(state="normal")
         self.load_button.configure(state="normal" if self.backup_path.get().strip() else "disabled")
@@ -475,12 +386,7 @@ class RestorePage(ctk.CTkFrame):
         self.rename_radio.configure(state="normal")
         self.overwrite_radio.configure(state="normal")
         self.preflight_button.configure(state="normal" if self._info else "disabled")
-        approved = bool(
-            self._preflight
-            and self._info
-            and self._preflight.backup_path == self._info.backup_path
-            and self._preflight.conflict == self.conflict.get()
-        )
+        approved = bool(self._preflight and self._info and self._preflight.backup_path == self._info.backup_path and self._preflight.conflict == self.conflict.get())
         if self.conflict.get() == "overwrite":
             self.start_button.grid_remove()
             self.overwrite_button.grid()
@@ -515,7 +421,10 @@ class RestorePage(ctk.CTkFrame):
             dialog = DangerConfirmDialog(
                 self.winfo_toplevel(),
                 "确认覆盖恢复",
-                f"将覆盖 {self._preflight.conflicts} 个当前已存在文件，并使用已验证备份内容替换它们。该操作不可自动撤销。",
+                (
+                    f"将尝试覆盖 {self._preflight.conflicts} 个当前已存在文件。"
+                    "被占用或无权限且尚未替换的文件会跳过并记录，其余文件继续恢复。"
+                ),
                 phrase="OVERWRITE",
             )
             dialog.confirm_button.configure(text="确认覆盖恢复")
