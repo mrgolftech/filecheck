@@ -30,19 +30,20 @@ menu.cli = resilient_cli
 menu._environment_and_index_flow = fast_index.environment_and_index_flow
 menu._resume_flow = resume_ui.menu_resume_flow
 
-# Use one strong batch SHA-256 preflight before deletion.  Once the user
+# Use one strong batch SHA-256 preflight before deletion. Once the user
 # confirms, each source is checked against the preflight metadata snapshot and
-# then deleted without hashing the whole file a second time.  Read-only files
-# are retried after clearing only the read-only bit.  Deletion checkpoints are
+# then deleted without hashing the whole file a second time. The Windows
+# read-only attribute is treated as non-blocking by clearing only that bit
+# before unlink; ACL/lock errors still fail safely. Deletion checkpoints are
 # batched to avoid rewriting the full state file for every source.
 deletion_runtime.install()
 
-# Keep the main menu focused on the normal workflow: backup resume sits next to
-# backup creation, while diagnostic/selftest and advanced CLI help stay
-# available as command-line subcommands rather than interactive menu entries.
+# Keep the normal interactive menu compact. Backup creation and backup-resume
+# share one workflow entry; diagnostics/selftest and advanced CLI help remain
+# available as command-line subcommands rather than menu entries.
 menu_layout.install()
 
-# A blank ENTER at the top-level menu must not silently choose item 1.  Rebuild
+# A blank ENTER at the top-level menu must not silently choose item 1. Rebuild
 # is destructive to the current in-memory index state and can take noticeable
 # time; requiring an explicit menu number also prevents an error -> ENTER ->
 # rebuild cycle from looking like an indexing loop.
