@@ -40,7 +40,7 @@ def test_delete_after_preflight_does_not_hash_source_again(tmp_path: Path, monke
     assert not source.exists()
 
 
-def test_readonly_access_denied_is_retried_after_clearing_write_bit(
+def test_readonly_is_cleared_before_first_delete_attempt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     source = tmp_path / "readonly.txt"
@@ -50,16 +50,31 @@ def test_readonly_access_denied_is_retried_after_clearing_write_bit(
     real_unlink = Path.unlink
     calls = {"count": 0}
 
-    def simulated_windows_unlink(path: Path, *args, **kwargs):
+    def assert_writable_then_unlink(path: Path, *args, **kwargs):
         calls["count"] += 1
-        if calls["count"] == 1:
-            raise PermissionError(5, "Access is denied", str(path))
+        assert path.stat().st_mode & stat.S_IWRITE
         return real_unlink(path, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "unlink", simulated_windows_unlink)
-    deletion_runtime._unlink_with_readonly_retry(source)
-    assert calls["count"] == 2
+    monkeypatch.setattr(Path, "unlink", assert_writable_then_unlink)
+    deletion_runtime._unlink_ignoring_readonly(source)
+    assert calls["count"] == 1
     assert not source.exists()
+
+
+def test_failed_delete_restores_readonly_attribute(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    source = tmp_path / "readonly.txt"
+    source.write_text("payload", encoding="utf-8")
+    source.chmod(source.stat().st_mode & ~stat.S_IWRITE)
+
+    def fail_unlink(_path: Path, *args, **kwargs):
+        raise PermissionError(5, "Access is denied", str(_path))
+
+    monkeypatch.setattr(Path, "unlink", fail_unlink)
+    with pytest.raises(PermissionError):
+        deletion_runtime._unlink_ignoring_readonly(source)
+
+    assert source.exists()
+    assert not (source.stat().st_mode & stat.S_IWRITE)
 
 
 def test_changed_after_preflight_is_not_deleted(tmp_path: Path) -> None:
