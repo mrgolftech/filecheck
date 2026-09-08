@@ -28,7 +28,7 @@ class FakeTask:
         return None
 
 
-def _scan_result(tmp_path: Path, backup_roots, *, inaccessible: bool = False) -> ScanResult:
+def _scan_result(tmp_path: Path, backup_root: Path, *, inaccessible: bool = False) -> ScanResult:
     source_dir = tmp_path / "source"
     source_dir.mkdir()
     first = source_dir / "机密报告.txt"
@@ -57,7 +57,6 @@ def _scan_result(tmp_path: Path, backup_roots, *, inaccessible: bool = False) ->
             "accessible": True,
         },
     ]
-    roots = [str(Path(value).resolve()) for value in backup_roots]
     rules_path = Path(cli._default_rules_path()).resolve()
     return ScanResult(
         json_path=json_path,
@@ -67,8 +66,7 @@ def _scan_result(tmp_path: Path, backup_roots, *, inaccessible: bool = False) ->
             "rules": cli._rules_metadata(rules_path),
             "index_updated_at": "test-index-v1",
             "selected_roots": [],
-            "backup_root": roots[0],
-            "backup_roots": roots,
+            "backup_root": str(backup_root.resolve()),
         },
         counts={"total": 2, "high": 1, "sensitive": 0, "review": 1},
         total_size=8,
@@ -76,20 +74,20 @@ def _scan_result(tmp_path: Path, backup_roots, *, inaccessible: bool = False) ->
     )
 
 
-def _patch_scan_basis(monkeypatch: pytest.MonkeyPatch, backup_roots, *, updated_at: str = "test-index-v1") -> None:
-    roots = [str(Path(value).resolve()) for value in backup_roots]
+def _patch_scan_basis(monkeypatch: pytest.MonkeyPatch, backup_root: Path, *, updated_at: str = "test-index-v1") -> None:
+    root = str(backup_root.resolve())
     monkeypatch.setattr(
         backup_service,
         "load_index_state",
         lambda required=True: {"updated_at": updated_at, "selected_roots": []},
     )
-    monkeypatch.setattr(backup_service, "current_backup_roots", lambda: roots)
+    monkeypatch.setattr(backup_service, "current_backup_root", lambda: root)
 
 
 def test_backup_preflight_and_run_reuse_verified_core(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     destination = tmp_path / "backup-root"
-    _patch_scan_basis(monkeypatch, [destination])
-    result = _scan_result(tmp_path, [destination])
+    _patch_scan_basis(monkeypatch, destination)
+    result = _scan_result(tmp_path, destination)
     request = backup_service.BackupRequest(result, str(destination))
     task = FakeTask()
 
@@ -111,20 +109,10 @@ def test_backup_preflight_and_run_reuse_verified_core(tmp_path: Path, monkeypatc
     assert any("全量 SHA-256 校验" in line for line in task.logs)
 
 
-def test_backup_accepts_second_configured_target(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    first = tmp_path / "backup-a"
-    second = tmp_path / "backup-b"
-    _patch_scan_basis(monkeypatch, [first, second])
-    result = _scan_result(tmp_path, [first, second])
-    request = backup_service.BackupRequest(result, str(second))
-    preflight = backup_service.preflight_backup(request, FakeTask())
-    assert preflight.destination_root == second.resolve()
-
-
 def test_backup_preflight_rejects_inaccessible_scan_items(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     destination = tmp_path / "backup-root"
-    _patch_scan_basis(monkeypatch, [destination])
-    result = _scan_result(tmp_path, [destination], inaccessible=True)
+    _patch_scan_basis(monkeypatch, destination)
+    result = _scan_result(tmp_path, destination, inaccessible=True)
     request = backup_service.BackupRequest(result, str(destination))
     with pytest.raises(RuntimeError, match="当前不可访问"):
         backup_service.preflight_backup(request, FakeTask())
@@ -132,29 +120,29 @@ def test_backup_preflight_rejects_inaccessible_scan_items(tmp_path: Path, monkey
 
 def test_backup_rejects_scan_after_index_changes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     destination = tmp_path / "backup-root"
-    result = _scan_result(tmp_path, [destination])
-    _patch_scan_basis(monkeypatch, [destination], updated_at="test-index-v2")
+    result = _scan_result(tmp_path, destination)
+    _patch_scan_basis(monkeypatch, destination, updated_at="test-index-v2")
     request = backup_service.BackupRequest(result, str(destination))
     with pytest.raises(RuntimeError, match="索引已经创建或更新"):
         backup_service.preflight_backup(request, FakeTask())
 
 
-def test_backup_rejects_scan_after_backup_targets_change(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_backup_rejects_scan_after_backup_root_changes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     first = tmp_path / "backup-a"
     second = tmp_path / "backup-b"
-    result = _scan_result(tmp_path, [first])
-    _patch_scan_basis(monkeypatch, [first, second])
-    request = backup_service.BackupRequest(result, str(first))
+    result = _scan_result(tmp_path, first)
+    _patch_scan_basis(monkeypatch, second)
+    request = backup_service.BackupRequest(result, str(second))
     with pytest.raises(RuntimeError, match="备份目录设置已经修改"):
         backup_service.preflight_backup(request, FakeTask())
 
 
 def test_backup_rejects_destination_outside_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     configured = tmp_path / "configured-backup"
-    _patch_scan_basis(monkeypatch, [configured])
-    result = _scan_result(tmp_path, [configured])
+    _patch_scan_basis(monkeypatch, configured)
+    result = _scan_result(tmp_path, configured)
     request = backup_service.BackupRequest(result, str(tmp_path / "other-backup"))
-    with pytest.raises(RuntimeError, match="设置"):
+    with pytest.raises(RuntimeError, match="统一备份根目录"):
         backup_service.preflight_backup(request, FakeTask())
 
 
