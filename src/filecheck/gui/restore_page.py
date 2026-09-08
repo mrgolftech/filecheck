@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import tkinter as tk
-from pathlib import Path
 from tkinter import filedialog
 
 import customtkinter as ctk
 
+from .batch_selector import BackupBatchSelector
 from .components import Card, DangerButton, DangerConfirmDialog, MetricCard, PageHeader, PrimaryButton, SecondaryButton, StatusPill
 from .tokens import Layout, Palette, Radius, Spacing, Typography
 
@@ -34,51 +34,38 @@ class RestorePage(ctk.CTkFrame):
         self._info = None
         self._preflight = None
         self._busy = False
-        self.backup_path.trace_add("write", self._input_changed)
-        self.conflict.trace_add("write", self._input_changed)
+        self.conflict.trace_add("write", self._strategy_changed)
 
         PageHeader(
             self,
             "恢复",
-            "选择已验证备份，先检查原始路径和冲突，再按指定策略恢复并执行最终 SHA-256 校验。",
+            "从统一备份根目录选择一个已验证批次，先检查原始路径和冲突，再按指定策略恢复并执行最终 SHA-256 校验。",
         ).grid(row=0, column=0, sticky="ew")
 
         target_card = Card(self)
         target_card.grid(row=1, column=0, sticky="ew", pady=(Spacing.LG, 0))
         target_card.grid_columnconfigure(0, weight=1)
         header = ctk.CTkFrame(target_card, fg_color="transparent")
-        header.grid(row=0, column=0, columnspan=3, sticky="ew", padx=Layout.CARD_PADDING, pady=(Layout.CARD_PADDING, Spacing.SM))
+        header.grid(row=0, column=0, columnspan=2, sticky="ew", padx=Layout.CARD_PADDING, pady=(Layout.CARD_PADDING, Spacing.SM))
         header.grid_columnconfigure(0, weight=1)
         ctk.CTkLabel(header, text="备份批次", text_color=Palette.TEXT, font=Typography.CARD_TITLE, anchor="w").grid(row=0, column=0, sticky="w")
         self.state_pill = StatusPill(header, "等待载入", tone="neutral")
         self.state_pill.grid(row=0, column=1, sticky="e")
 
-        self.path_entry = ctk.CTkEntry(
-            target_card,
-            textvariable=self.backup_path,
-            height=Layout.CONTROL_HEIGHT,
-            corner_radius=Radius.CONTROL,
-            border_color=Palette.BORDER,
-            fg_color=Palette.SURFACE,
-            text_color=Palette.TEXT,
-            font=Typography.BODY,
-            placeholder_text="选择包含 manifest.json 的备份批次目录",
-        )
-        self.path_entry.grid(row=1, column=0, sticky="ew", padx=(Layout.CARD_PADDING, Spacing.SM))
-        self.browse_button = SecondaryButton(target_card, "选择目录", command=self._pick_backup, width=100)
-        self.browse_button.grid(row=1, column=1, padx=(0, Spacing.SM))
-        self.load_button = SecondaryButton(target_card, "载入备份", command=self._load, width=100)
-        self.load_button.grid(row=1, column=2, padx=(0, Layout.CARD_PADDING))
+        self.batch_selector = BackupBatchSelector(target_card, self._select_discovered_batch)
+        self.batch_selector.grid(row=1, column=0, sticky="ew", padx=(Layout.CARD_PADDING, Spacing.SM))
+        self.browse_button = SecondaryButton(target_card, "手动选择其他目录", command=self._pick_backup, width=145)
+        self.browse_button.grid(row=1, column=1, sticky="n", padx=(0, Layout.CARD_PADDING))
         self.target_label = ctk.CTkLabel(
             target_card,
-            text="可使用刚完成的备份，也可选择以前的 FileCheck 目录备份。",
+            text="将自动扫描设置中的统一备份根目录；若存在多个含 manifest.json 的批次，默认选择目录名最新的一个。",
             text_color=Palette.TEXT_SECONDARY,
             font=Typography.CAPTION,
             anchor="w",
             justify="left",
             wraplength=850,
         )
-        self.target_label.grid(row=2, column=0, columnspan=3, sticky="ew", padx=Layout.CARD_PADDING, pady=(Spacing.SM, Layout.CARD_PADDING))
+        self.target_label.grid(row=2, column=0, columnspan=2, sticky="ew", padx=Layout.CARD_PADDING, pady=(Spacing.SM, Layout.CARD_PADDING))
 
         preflight_card = Card(self)
         preflight_card.grid(row=2, column=0, sticky="ew", pady=(Spacing.MD, 0))
@@ -171,6 +158,25 @@ class RestorePage(ctk.CTkFrame):
         self.log_box.grid(row=4, column=0, sticky="nsew", padx=Layout.CARD_PADDING, pady=(0, Layout.CARD_PADDING))
         self.log_box.configure(state="disabled")
         self._refresh_controls()
+        self.bind("<Map>", self._page_mapped, add="+")
+        self.after_idle(self._refresh_batches)
+
+    def _page_mapped(self, _event=None) -> None:
+        self._refresh_batches()
+
+    def _refresh_batches(self) -> None:
+        preferred = str(self._info.backup_path) if self._info is not None else None
+        self.batch_selector.refresh(preferred=preferred, auto_load=True)
+
+    def _select_discovered_batch(self, value: str) -> None:
+        self.backup_path.set(value)
+        self._info = None
+        self._preflight = None
+        self._reset_metrics()
+        try:
+            self._on_load(value, quiet=True)
+        except TypeError:
+            self._on_load(value)
 
     def _radio(self, master, text: str, value: str):
         return ctk.CTkRadioButton(
@@ -186,19 +192,23 @@ class RestorePage(ctk.CTkFrame):
         )
 
     def set_target(self, value) -> None:
-        self.backup_path.set(str(value) if value else "")
+        text = str(value) if value else ""
+        self.backup_path.set(text)
         self._info = None
         self._preflight = None
         self._reset_metrics()
+        if text:
+            self.batch_selector.refresh(preferred=text, auto_load=False)
         self._refresh_controls()
 
     def set_info(self, info) -> None:
         self._info = info
         self._preflight = None
         self.backup_path.set(str(info.backup_path))
+        self.batch_selector.set_selected_path(str(info.backup_path))
         self.state_pill.set_tone("info", "已载入")
         self.target_label.configure(
-            text=f"批次：{info.batch_id}    文件数：{info.file_count}    数据量：{_format_bytes(info.total_bytes)}\n下一步执行全量备份校验并检查原始恢复路径冲突。",
+            text=f"批次：{info.batch_id}    文件数：{info.file_count}    数据量：{_format_bytes(info.total_bytes)}\n目录：{info.backup_path}\n下一步执行全量备份校验并检查原始恢复路径冲突。",
             text_color=Palette.TEXT_SECONDARY,
         )
         self.metric_files.set_value(str(info.file_count))
@@ -347,21 +357,9 @@ class RestorePage(ctk.CTkFrame):
         self.metric_conflicts.set_value("-")
         self.metric_action.set_value("-")
 
-    def _input_changed(self, *args) -> None:
+    def _strategy_changed(self, *args) -> None:
         if self._busy:
             return
-        if self._info:
-            current = self.backup_path.get().strip()
-            try:
-                same_target = bool(current) and Path(current).expanduser().resolve() == self._info.backup_path
-            except (OSError, RuntimeError):
-                same_target = False
-            if not same_target:
-                self._info = None
-                self._preflight = None
-                self.state_pill.set_tone("neutral", "需要重新载入")
-                self.target_label.configure(text="备份路径已经变化，请重新点击“载入备份”后再执行恢复预检。", text_color=Palette.WARNING)
-                self._reset_metrics()
         self._invalidate_preflight()
         mode = self.conflict.get()
         descriptions = {
@@ -374,14 +372,13 @@ class RestorePage(ctk.CTkFrame):
         self._refresh_controls()
 
     def _refresh_controls(self) -> None:
+        self.batch_selector.set_busy(self._busy)
+        self.browse_button.configure(state="disabled" if self._busy else "normal")
         if self._busy:
-            for widget in (self.path_entry, self.browse_button, self.load_button, self.skip_radio, self.rename_radio, self.overwrite_radio, self.preflight_button, self.start_button, self.overwrite_button):
+            for widget in (self.skip_radio, self.rename_radio, self.overwrite_radio, self.preflight_button, self.start_button, self.overwrite_button):
                 widget.configure(state="disabled")
             self.cancel_button.configure(state="normal")
             return
-        self.path_entry.configure(state="normal")
-        self.browse_button.configure(state="normal")
-        self.load_button.configure(state="normal" if self.backup_path.get().strip() else "disabled")
         self.skip_radio.configure(state="normal")
         self.rename_radio.configure(state="normal")
         self.overwrite_radio.configure(state="normal")
@@ -398,16 +395,13 @@ class RestorePage(ctk.CTkFrame):
         self.cancel_button.configure(state="disabled")
 
     def _pick_backup(self) -> None:
-        path = filedialog.askdirectory(title="选择 FileCheck 备份批次目录")
+        path = filedialog.askdirectory(title="手动选择 FileCheck 备份批次目录")
         if path:
             self.backup_path.set(path)
             self._info = None
             self._preflight = None
             self._reset_metrics()
-            self._refresh_controls()
-
-    def _load(self) -> None:
-        self._on_load(self.backup_path.get().strip())
+            self._on_load(path)
 
     def _preflight_action(self) -> None:
         if self._info:
