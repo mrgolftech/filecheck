@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Callable
+from typing import Callable, Optional
 
 import customtkinter as ctk
 
@@ -41,7 +41,7 @@ class Card(ctk.CTkFrame):
 
 
 class PrimaryButton(ctk.CTkButton):
-    def __init__(self, master, text: str, command: Callable[[], None] | None = None, **kwargs):
+    def __init__(self, master, text: str, command: Optional[Callable[[], None]] = None, **kwargs):
         super().__init__(
             master,
             text=text,
@@ -57,7 +57,7 @@ class PrimaryButton(ctk.CTkButton):
 
 
 class SecondaryButton(ctk.CTkButton):
-    def __init__(self, master, text: str, command: Callable[[], None] | None = None, **kwargs):
+    def __init__(self, master, text: str, command: Optional[Callable[[], None]] = None, **kwargs):
         super().__init__(
             master,
             text=text,
@@ -75,7 +75,7 @@ class SecondaryButton(ctk.CTkButton):
 
 
 class DangerButton(ctk.CTkButton):
-    def __init__(self, master, text: str, command: Callable[[], None] | None = None, **kwargs):
+    def __init__(self, master, text: str, command: Optional[Callable[[], None]] = None, **kwargs):
         super().__init__(
             master,
             text=text,
@@ -135,7 +135,7 @@ class StatusPill(ctk.CTkLabel):
             **kwargs,
         )
 
-    def set_tone(self, tone: str, text: str | None = None) -> None:
+    def set_tone(self, tone: str, text: Optional[str] = None) -> None:
         bg, fg = self._COLORS.get(tone, self._COLORS["neutral"])
         updates = {"fg_color": bg, "text_color": fg}
         if text is not None:
