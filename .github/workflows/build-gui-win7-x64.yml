@@ -79,7 +79,7 @@ jobs:
             packaging/filecheck_entry.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Build GUI onedir bundle
+      - name: Build GUI runtime onedir bundle
         shell: pwsh
         run: |
           $ctkPath = python -c "import pathlib,customtkinter; print(pathlib.Path(customtkinter.__file__).resolve().parent)"
@@ -89,7 +89,7 @@ jobs:
             --clean `
             --onedir `
             --windowed `
-            --name FileCheck-GUI `
+            --name FileCheck-GUI-runtime `
             --paths src `
             --hidden-import darkdetect `
             --add-data "config/rules.json;config" `
@@ -97,12 +97,25 @@ jobs:
             packaging/filecheck_gui_entry.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      - name: Build native root GUI launcher
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (-not (Test-Path $vswhere)) { throw "vswhere.exe not found" }
+          $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vs) { throw "Visual C++ build tools not found" }
+          $vcvars = Join-Path $vs "VC\Auxiliary\Build\vcvars64.bat"
+          if (-not (Test-Path $vcvars)) { throw "vcvars64.bat not found" }
+          cmd /c "`"$vcvars`" && cl /nologo /O2 /MT /DUNICODE /D_UNICODE /Fe:dist\FileCheck-GUI.exe packaging\gui_launcher.c /link /SUBSYSTEM:WINDOWS shell32.lib"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (-not (Test-Path "dist\FileCheck-GUI.exe")) { throw "native FileCheck-GUI.exe was not produced" }
+
       - name: Smoke test raw executables
         shell: pwsh
         run: |
           .\dist\FileCheck.exe selftest
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          .\dist\FileCheck-GUI\FileCheck-GUI.exe --smoke-test
+          .\dist\FileCheck-GUI-runtime\FileCheck-GUI-runtime.exe --smoke-test
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Download and verify official ES and Everything
@@ -119,9 +132,7 @@ jobs:
                 Remove-Item -LiteralPath $OutFile -Force -ErrorAction SilentlyContinue
                 Write-Host "Download attempt $i/$Attempts : $Uri"
                 Invoke-WebRequest -Uri $Uri -OutFile $OutFile -TimeoutSec 120
-                if (-not (Test-Path -LiteralPath $OutFile)) {
-                  throw "Download completed without output file: $OutFile"
-                }
+                if (-not (Test-Path -LiteralPath $OutFile)) { throw "Download completed without output file: $OutFile" }
                 return
               }
               catch {
@@ -135,18 +146,14 @@ jobs:
 
           Invoke-DownloadWithRetry -Uri "$env:ES_URL" -OutFile "ES-1.1.0.37.x64.zip"
           $esActual = (Get-FileHash "ES-1.1.0.37.x64.zip" -Algorithm SHA256).Hash
-          if ($esActual -ne $env:ES_ZIP_SHA256) {
-            throw "ES archive SHA-256 mismatch. expected=$env:ES_ZIP_SHA256 actual=$esActual"
-          }
+          if ($esActual -ne $env:ES_ZIP_SHA256) { throw "ES archive SHA-256 mismatch. expected=$env:ES_ZIP_SHA256 actual=$esActual" }
           Expand-Archive "ES-1.1.0.37.x64.zip" -DestinationPath "es-dist" -Force
           $es = Get-ChildItem "es-dist" -Recurse -File -Filter "es.exe" | Select-Object -First 1
           if (-not $es) { throw "es.exe not found in official ES archive" }
 
           Invoke-DownloadWithRetry -Uri "$env:EVERYTHING_URL" -OutFile "Everything-1.4.1.1032.x64.zip"
           $everythingActual = (Get-FileHash "Everything-1.4.1.1032.x64.zip" -Algorithm SHA256).Hash
-          if ($everythingActual -ne $env:EVERYTHING_ZIP_SHA256) {
-            throw "Everything archive SHA-256 mismatch. expected=$env:EVERYTHING_ZIP_SHA256 actual=$everythingActual"
-          }
+          if ($everythingActual -ne $env:EVERYTHING_ZIP_SHA256) { throw "Everything archive SHA-256 mismatch. expected=$env:EVERYTHING_ZIP_SHA256 actual=$everythingActual" }
           Expand-Archive "Everything-1.4.1.1032.x64.zip" -DestinationPath "everything-dist" -Force
           $everything = Get-ChildItem "everything-dist" -Recurse -File -Filter "Everything.exe" | Select-Object -First 1
           if (-not $everything) { throw "Everything.exe not found in official portable archive" }
@@ -156,13 +163,15 @@ jobs:
         run: |
           $pkg = "package\FileCheck-GUI-win7-x64"
           New-Item -ItemType Directory -Force $pkg | Out-Null
+          New-Item -ItemType Directory -Force "$pkg\app" | Out-Null
           New-Item -ItemType Directory -Force "$pkg\config" | Out-Null
           New-Item -ItemType Directory -Force "$pkg\tools" | Out-Null
           New-Item -ItemType Directory -Force "$pkg\advanced" | Out-Null
 
-          # Keep PyInstaller's DLL/PYD runtime inside one obvious application
-          # subdirectory instead of spreading it across the ZIP root.
-          Copy-Item "dist\FileCheck-GUI" "$pkg\FileCheck-GUI" -Recurse -Force
+          # Root stays clean: only a tiny native launcher is user-facing. All
+          # Python/Tk/CustomTkinter DLL/PYD runtime files live under app\.
+          Copy-Item "dist\FileCheck-GUI.exe" "$pkg\FileCheck-GUI.exe" -Force
+          Copy-Item "dist\FileCheck-GUI-runtime\*" "$pkg\app" -Recurse -Force
           Copy-Item "dist\FileCheck.exe" "$pkg\advanced\FileCheck.exe" -Force
           Copy-Item "config\rules.json" "$pkg\config\rules.json" -Force
           Copy-Item "packaging\README-GUI-WIN7-X64.txt" "$pkg\README.txt" -Force
@@ -173,12 +182,14 @@ jobs:
           Copy-Item $es.FullName "$pkg\tools\es.exe" -Force
           Copy-Item $everything.FullName "$pkg\tools\Everything.exe" -Force
 
-          $guiHash = (Get-FileHash "$pkg\FileCheck-GUI\FileCheck-GUI.exe" -Algorithm SHA256).Hash
+          $guiHash = (Get-FileHash "$pkg\FileCheck-GUI.exe" -Algorithm SHA256).Hash
+          $runtimeHash = (Get-FileHash "$pkg\app\FileCheck-GUI-runtime.exe" -Algorithm SHA256).Hash
           $cliHash = (Get-FileHash "$pkg\advanced\FileCheck.exe" -Algorithm SHA256).Hash
           $everythingHash = (Get-FileHash "$pkg\tools\Everything.exe" -Algorithm SHA256).Hash
           $esHash = (Get-FileHash "$pkg\tools\es.exe" -Algorithm SHA256).Hash
           @(
-            "FileCheck-GUI\FileCheck-GUI.exe  $guiHash",
+            "FileCheck-GUI.exe  $guiHash",
+            "app\FileCheck-GUI-runtime.exe  $runtimeHash",
             "advanced\FileCheck.exe  $cliHash",
             "tools\Everything.exe  $everythingHash",
             "tools\es.exe  $esHash"
@@ -194,7 +205,8 @@ jobs:
           $verifyDir = Join-Path $env:RUNNER_TEMP "filecheck-gui-win7-check"
           Expand-Archive "FileCheck-v0.1.1-gui-win7-x64.zip" -DestinationPath $verifyDir -Force
           foreach ($relative in @(
-            "FileCheck-GUI\FileCheck-GUI.exe",
+            "FileCheck-GUI.exe",
+            "app\FileCheck-GUI-runtime.exe",
             "advanced\FileCheck.exe",
             "tools\es.exe",
             "tools\Everything.exe",
@@ -202,16 +214,14 @@ jobs:
             "README.txt",
             "SHA256SUMS.txt"
           )) {
-            if (-not (Test-Path (Join-Path $verifyDir $relative))) {
-              throw "Package file missing: $relative"
-            }
+            if (-not (Test-Path (Join-Path $verifyDir $relative))) { throw "Package file missing: $relative" }
           }
 
           Push-Location $env:TEMP
           try {
             & (Join-Path $verifyDir "advanced\FileCheck.exe") selftest | Out-Host
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            & (Join-Path $verifyDir "FileCheck-GUI\FileCheck-GUI.exe") --smoke-test
+            & (Join-Path $verifyDir "FileCheck-GUI.exe") --smoke-test
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
           finally {
