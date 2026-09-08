@@ -7,6 +7,7 @@ import customtkinter as ctk
 
 from .batch_selector import BackupBatchSelector
 from .components import Card, DangerButton, DangerConfirmDialog, MetricCard, PageHeader, PrimaryButton, SecondaryButton, StatusPill
+from .path_widgets import FileLocationRow
 from .tokens import Layout, Palette, Radius, Spacing, Typography
 
 
@@ -63,7 +64,7 @@ class RestorePage(ctk.CTkFrame):
             font=Typography.CAPTION,
             anchor="w",
             justify="left",
-            wraplength=850,
+            wraplength=620,
         )
         self.target_label.grid(row=2, column=0, columnspan=2, sticky="ew", padx=Layout.CARD_PADDING, pady=(Spacing.SM, Layout.CARD_PADDING))
 
@@ -75,12 +76,14 @@ class RestorePage(ctk.CTkFrame):
         )
         choices = ctk.CTkFrame(preflight_card, fg_color="transparent")
         choices.grid(row=1, column=0, sticky="ew", padx=Layout.CARD_PADDING)
+        for column in range(3):
+            choices.grid_columnconfigure(column, weight=1)
         self.skip_radio = self._radio(choices, "跳过已有文件（推荐）", "skip")
-        self.skip_radio.pack(side="left")
+        self.skip_radio.grid(row=0, column=0, sticky="w")
         self.rename_radio = self._radio(choices, "保留并重命名恢复", "rename")
-        self.rename_radio.pack(side="left", padx=(Spacing.LG, 0))
+        self.rename_radio.grid(row=0, column=1, sticky="w", padx=(Spacing.SM, 0))
         self.overwrite_radio = self._radio(choices, "覆盖已有文件", "overwrite")
-        self.overwrite_radio.pack(side="left", padx=(Spacing.LG, 0))
+        self.overwrite_radio.grid(row=0, column=2, sticky="w", padx=(Spacing.SM, 0))
 
         self.strategy_label = ctk.CTkLabel(
             preflight_card,
@@ -89,7 +92,7 @@ class RestorePage(ctk.CTkFrame):
             font=Typography.SMALL,
             anchor="w",
             justify="left",
-            wraplength=850,
+            wraplength=620,
         )
         self.strategy_label.grid(row=2, column=0, sticky="ew", padx=Layout.CARD_PADDING, pady=(Spacing.SM, Spacing.MD))
 
@@ -119,7 +122,7 @@ class RestorePage(ctk.CTkFrame):
         run_card = Card(self)
         run_card.grid(row=3, column=0, sticky="nsew", pady=(Spacing.MD, 0))
         run_card.grid_columnconfigure(0, weight=1)
-        run_card.grid_rowconfigure(4, weight=1)
+        run_card.grid_rowconfigure(5, weight=1)
         ctk.CTkLabel(run_card, text="执行状态", text_color=Palette.TEXT, font=Typography.CARD_TITLE, anchor="w").grid(
             row=0, column=0, sticky="w", padx=Layout.CARD_PADDING, pady=(Layout.CARD_PADDING, Spacing.SM)
         )
@@ -142,9 +145,12 @@ class RestorePage(ctk.CTkFrame):
             font=Typography.SMALL,
             anchor="w",
             justify="left",
-            wraplength=850,
+            wraplength=620,
         )
         self.result_label.grid(row=3, column=0, sticky="ew", padx=Layout.CARD_PADDING, pady=(0, Spacing.XS))
+        self.skipped_row = FileLocationRow(run_card, "跳过清单")
+        self.skipped_row.grid(row=4, column=0, sticky="ew", padx=Layout.CARD_PADDING, pady=(0, Spacing.XS))
+        self.skipped_row.grid_remove()
         self.log_box = ctk.CTkTextbox(
             run_card,
             fg_color=Palette.SURFACE_SUBTLE,
@@ -155,7 +161,7 @@ class RestorePage(ctk.CTkFrame):
             wrap="word",
             height=110,
         )
-        self.log_box.grid(row=4, column=0, sticky="nsew", padx=Layout.CARD_PADDING, pady=(0, Layout.CARD_PADDING))
+        self.log_box.grid(row=5, column=0, sticky="nsew", padx=Layout.CARD_PADDING, pady=(0, Layout.CARD_PADDING))
         self.log_box.configure(state="disabled")
         self._refresh_controls()
         self.bind("<Map>", self._page_mapped, add="+")
@@ -208,7 +214,7 @@ class RestorePage(ctk.CTkFrame):
         self.batch_selector.set_selected_path(str(info.backup_path))
         self.state_pill.set_tone("info", "已载入")
         self.target_label.configure(
-            text=f"批次：{info.batch_id}    文件数：{info.file_count}    数据量：{_format_bytes(info.total_bytes)}\n目录：{info.backup_path}\n下一步执行全量备份校验并检查原始恢复路径冲突。",
+            text=f"批次：{info.batch_id}    文件数：{info.file_count}    数据量：{_format_bytes(info.total_bytes)}\n下一步执行全量备份校验并检查原始恢复路径冲突。",
             text_color=Palette.TEXT_SECONDARY,
         )
         self.metric_files.set_value(str(info.file_count))
@@ -230,6 +236,8 @@ class RestorePage(ctk.CTkFrame):
         self._preflight = None
         self._clear_log()
         self.result_label.configure(text="")
+        self.skipped_row.grid_remove()
+        self.skipped_row.clear()
         self.progress_bar.stop()
         self.progress_bar.configure(mode="determinate")
         self.progress_bar.set(0)
@@ -267,6 +275,8 @@ class RestorePage(ctk.CTkFrame):
         self._busy = True
         self._clear_log()
         self.result_label.configure(text="")
+        self.skipped_row.grid_remove()
+        self.skipped_row.clear()
         self.progress_bar.stop()
         self.progress_bar.configure(mode="indeterminate")
         self.progress_bar.start()
@@ -284,15 +294,18 @@ class RestorePage(ctk.CTkFrame):
         report = getattr(result, "skipped_report", None)
         if blocked:
             self.progress_label.configure(text=f"恢复完成，但有 {blocked} 个文件无法覆盖并已跳过", text_color=Palette.WARNING)
-            report_text = f"\n跳过清单：{report}" if report else ""
             self.result_label.configure(
-                text=f"成功恢复：{result.restored}    普通跳过：{result.skipped}    无法覆盖：{blocked}{report_text}",
+                text=f"成功恢复：{result.restored}    普通跳过：{result.skipped}    无法覆盖：{blocked}",
                 text_color=Palette.WARNING,
             )
             self.append_log(f"恢复完成但存在跳过项：blocked={blocked}")
             if report:
+                self.skipped_row.set_path(report)
+                self.skipped_row.grid()
                 self.append_log(f"无法覆盖文件清单：{report}")
         else:
+            self.skipped_row.grid_remove()
+            self.skipped_row.clear()
             self.progress_label.configure(text=f"恢复完成：恢复 {result.restored}，跳过 {result.skipped}", text_color=Palette.SUCCESS)
             self.result_label.configure(text=f"恢复完成并通过最终 SHA-256 校验；耗时 {result.elapsed_seconds:.1f} 秒", text_color=Palette.SUCCESS)
         self._refresh_controls()
