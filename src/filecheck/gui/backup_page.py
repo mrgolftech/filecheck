@@ -6,6 +6,7 @@ from pathlib import Path
 import customtkinter as ctk
 
 from .components import Card, MetricCard, PageHeader, PrimaryButton, SecondaryButton, StatusPill
+from .path_widgets import FileLocationRow
 from .tokens import Layout, Palette, Radius, Spacing, Typography
 
 
@@ -50,14 +51,18 @@ class BackupPage(ctk.CTkFrame):
         self.source_state.grid(row=0, column=1, sticky="e")
         self.source_label = ctk.CTkLabel(
             source_card,
-            text="请先完成扫描。扫描摘要、JSON 和 CSV 路径会自动带入这里。",
+            text="请先完成扫描。扫描摘要、JSON 和 CSV 会自动带入这里。",
             text_color=Palette.TEXT_SECONDARY,
             font=Typography.CAPTION,
             anchor="w",
             justify="left",
-            wraplength=860,
+            wraplength=620,
         )
-        self.source_label.grid(row=1, column=0, sticky="ew", padx=Layout.CARD_PADDING, pady=(0, Layout.CARD_PADDING))
+        self.source_label.grid(row=1, column=0, sticky="ew", padx=Layout.CARD_PADDING, pady=(0, Spacing.XS))
+        self.json_row = FileLocationRow(source_card, "JSON")
+        self.json_row.grid(row=2, column=0, sticky="ew", padx=Layout.CARD_PADDING, pady=(Spacing.XS, 0))
+        self.csv_row = FileLocationRow(source_card, "CSV")
+        self.csv_row.grid(row=3, column=0, sticky="ew", padx=Layout.CARD_PADDING, pady=(Spacing.XS, Layout.CARD_PADDING))
 
         target_card = Card(self)
         target_card.grid(row=2, column=0, sticky="ew", pady=(Spacing.MD, 0))
@@ -66,16 +71,8 @@ class BackupPage(ctk.CTkFrame):
             row=0, column=0, columnspan=2, sticky="w", padx=Layout.CARD_PADDING, pady=(Layout.CARD_PADDING, Spacing.SM)
         )
 
-        self.destination_label = ctk.CTkLabel(
-            target_card,
-            text="统一备份根目录：未设置",
-            text_color=Palette.WARNING,
-            font=Typography.BODY_MEDIUM,
-            anchor="w",
-            justify="left",
-            wraplength=720,
-        )
-        self.destination_label.grid(row=1, column=0, sticky="ew", padx=Layout.CARD_PADDING)
+        self.destination_row = FileLocationRow(target_card, "备份根目录")
+        self.destination_row.grid(row=1, column=0, sticky="ew", padx=Layout.CARD_PADDING)
         if self._on_open_settings is not None:
             SecondaryButton(target_card, "打开设置", command=self._on_open_settings, width=105).grid(
                 row=1, column=1, padx=(Spacing.SM, Layout.CARD_PADDING)
@@ -99,6 +96,7 @@ class BackupPage(ctk.CTkFrame):
             font=Typography.SMALL,
             anchor="w",
             justify="left",
+            wraplength=620,
         )
         self.strategy_label.grid(row=3, column=0, columnspan=2, sticky="ew", padx=Layout.CARD_PADDING, pady=(Spacing.SM, 0))
         actions = ctk.CTkFrame(target_card, fg_color="transparent")
@@ -113,7 +111,7 @@ class BackupPage(ctk.CTkFrame):
         run_card = Card(self)
         run_card.grid(row=3, column=0, sticky="nsew", pady=(Spacing.MD, 0))
         run_card.grid_columnconfigure(0, weight=1)
-        run_card.grid_rowconfigure(4, weight=1)
+        run_card.grid_rowconfigure(5, weight=1)
         ctk.CTkLabel(run_card, text="执行状态", text_color=Palette.TEXT, font=Typography.CARD_TITLE, anchor="w").grid(
             row=0, column=0, sticky="w", padx=Layout.CARD_PADDING, pady=(Layout.CARD_PADDING, Spacing.SM)
         )
@@ -138,9 +136,12 @@ class BackupPage(ctk.CTkFrame):
             font=Typography.SMALL,
             anchor="w",
             justify="left",
-            wraplength=860,
+            wraplength=620,
         )
         self.result_label.grid(row=3, column=0, sticky="ew", padx=Layout.CARD_PADDING, pady=(0, Spacing.XS))
+        self.manifest_row = FileLocationRow(run_card, "manifest")
+        self.manifest_row.grid(row=4, column=0, sticky="ew", padx=Layout.CARD_PADDING, pady=(0, Spacing.XS))
+        self.manifest_row.grid_remove()
         self.log_box = ctk.CTkTextbox(
             run_card,
             fg_color=Palette.SURFACE_SUBTLE,
@@ -151,7 +152,7 @@ class BackupPage(ctk.CTkFrame):
             wrap="word",
             height=110,
         )
-        self.log_box.grid(row=4, column=0, sticky="nsew", padx=Layout.CARD_PADDING, pady=(0, Layout.CARD_PADDING))
+        self.log_box.grid(row=5, column=0, sticky="nsew", padx=Layout.CARD_PADDING, pady=(0, Layout.CARD_PADDING))
         self.log_box.configure(state="disabled")
         self.winfo_toplevel().bind("<<FileCheckScanBasisChanged>>", self._scan_basis_changed, add="+")
 
@@ -162,6 +163,8 @@ class BackupPage(ctk.CTkFrame):
         self._scan_ready = False
         self.source_state.set_tone("warning", "需要重新扫描")
         self.source_label.configure(text=message, text_color=Palette.WARNING)
+        self.json_row.clear()
+        self.csv_row.clear()
         self._invalidate_preflight()
         self._refresh_controls()
 
@@ -177,24 +180,24 @@ class BackupPage(ctk.CTkFrame):
                 text=(
                     f"候选：{count} 个    高风险：{result.counts.get('high', 0)}    "
                     f"敏感：{result.counts.get('sensitive', 0)}    复核：{result.counts.get('review', 0)}\n"
-                    f"总容量：{_format_bytes(result.total_size)}{warning}\n"
-                    f"JSON：{result.json_path}\nCSV：{result.csv_path}"
+                    f"总容量：{_format_bytes(result.total_size)}{warning}"
                 ),
                 text_color=Palette.TEXT_SECONDARY,
             )
+            self.json_row.set_path(result.json_path)
+            self.csv_row.set_path(result.csv_path)
         else:
             self.source_state.set_tone("warning", "无候选")
             self.source_label.configure(text="当前扫描结果没有候选文件。", text_color=Palette.WARNING)
+            self.json_row.set_path(result.json_path)
+            self.csv_row.set_path(result.csv_path)
         self._invalidate_preflight()
         self._refresh_controls()
 
     def set_suggested_destination(self, value) -> None:
         destination = str(value or "").strip()
         self.destination.set(destination)
-        if destination:
-            self.destination_label.configure(text=f"统一备份根目录：{destination}", text_color=Palette.TEXT_SECONDARY)
-        else:
-            self.destination_label.configure(text="统一备份根目录：未设置，请先到“设置”中配置", text_color=Palette.WARNING)
+        self.destination_row.set_path(destination)
         self._invalidate_preflight()
         self._refresh_controls()
 
@@ -202,6 +205,8 @@ class BackupPage(ctk.CTkFrame):
         self._approved_destination = None
         self._clear_log()
         self.result_label.configure(text="")
+        self.manifest_row.grid_remove()
+        self.manifest_row.clear()
         self._busy = True
         self._refresh_controls()
         self.progress_bar.stop()
@@ -221,7 +226,7 @@ class BackupPage(ctk.CTkFrame):
         self._refresh_controls()
         self.progress_bar.set(1.0)
         self.progress_label.configure(text="备份预检通过，可以开始备份", text_color=Palette.SUCCESS)
-        self.result_label.configure(text=f"目标目录：{result.destination_root}\n安全余量：{_format_bytes(result.reserve_bytes)}")
+        self.result_label.configure(text=f"安全余量：{_format_bytes(result.reserve_bytes)}")
 
     def begin_backup(self) -> None:
         self._clear_log()
@@ -232,6 +237,8 @@ class BackupPage(ctk.CTkFrame):
         self.progress_bar.set(0)
         self.progress_label.configure(text="正在创建并校验备份……", text_color=Palette.PRIMARY)
         self.result_label.configure(text="")
+        self.manifest_row.grid_remove()
+        self.manifest_row.clear()
         self.append_log("正式备份任务已启动；该步骤不会删除源文件。")
 
     def finish_backup(self, result) -> None:
@@ -243,13 +250,14 @@ class BackupPage(ctk.CTkFrame):
         throughput = f"    平均处理吞吐：{result.throughput_mib_s:.1f} MiB/s" if result.throughput_mib_s is not None else ""
         self.result_label.configure(
             text=(
-                f"备份批次：{result.backup_path}\n"
+                f"备份批次：{Path(result.backup_path).name}\n"
                 f"文件数：{result.file_count}    总容量：{_format_bytes(result.total_bytes)}"
-                f"    耗时：{result.elapsed_seconds:.1f} 秒{throughput}\n"
-                f"manifest：{Path(result.backup_path) / 'manifest.json'}"
+                f"    耗时：{result.elapsed_seconds:.1f} 秒{throughput}"
             ),
             text_color=Palette.SUCCESS,
         )
+        self.manifest_row.set_path(Path(result.backup_path) / "manifest.json")
+        self.manifest_row.grid()
         self.append_log("备份已安全完成。需要时可进入“源文件删除”进行独立高风险操作。")
 
     def update_progress(self, progress, message: str = "") -> None:
