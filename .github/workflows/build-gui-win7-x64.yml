@@ -65,7 +65,7 @@ jobs:
           python packaging/filecheck_entry.py selftest
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Build CLI executable
+      - name: Build advanced CLI executable
         shell: pwsh
         run: |
           pyinstaller `
@@ -158,9 +158,12 @@ jobs:
           New-Item -ItemType Directory -Force $pkg | Out-Null
           New-Item -ItemType Directory -Force "$pkg\config" | Out-Null
           New-Item -ItemType Directory -Force "$pkg\tools" | Out-Null
+          New-Item -ItemType Directory -Force "$pkg\advanced" | Out-Null
 
-          Copy-Item "dist\FileCheck-GUI\*" $pkg -Recurse -Force
-          Copy-Item "dist\FileCheck.exe" "$pkg\FileCheck.exe" -Force
+          # Keep PyInstaller's DLL/PYD runtime inside one obvious application
+          # subdirectory instead of spreading it across the ZIP root.
+          Copy-Item "dist\FileCheck-GUI" "$pkg\FileCheck-GUI" -Recurse -Force
+          Copy-Item "dist\FileCheck.exe" "$pkg\advanced\FileCheck.exe" -Force
           Copy-Item "config\rules.json" "$pkg\config\rules.json" -Force
           Copy-Item "packaging\README-GUI-WIN7-X64.txt" "$pkg\README.txt" -Force
           Copy-Item "packaging\THIRD-PARTY-NOTICES.txt" "$pkg\THIRD-PARTY-NOTICES.txt" -Force
@@ -170,13 +173,13 @@ jobs:
           Copy-Item $es.FullName "$pkg\tools\es.exe" -Force
           Copy-Item $everything.FullName "$pkg\tools\Everything.exe" -Force
 
-          $guiHash = (Get-FileHash "$pkg\FileCheck-GUI.exe" -Algorithm SHA256).Hash
-          $cliHash = (Get-FileHash "$pkg\FileCheck.exe" -Algorithm SHA256).Hash
+          $guiHash = (Get-FileHash "$pkg\FileCheck-GUI\FileCheck-GUI.exe" -Algorithm SHA256).Hash
+          $cliHash = (Get-FileHash "$pkg\advanced\FileCheck.exe" -Algorithm SHA256).Hash
           $everythingHash = (Get-FileHash "$pkg\tools\Everything.exe" -Algorithm SHA256).Hash
           $esHash = (Get-FileHash "$pkg\tools\es.exe" -Algorithm SHA256).Hash
           @(
-            "FileCheck-GUI.exe  $guiHash",
-            "FileCheck.exe  $cliHash",
+            "FileCheck-GUI\FileCheck-GUI.exe  $guiHash",
+            "advanced\FileCheck.exe  $cliHash",
             "tools\Everything.exe  $everythingHash",
             "tools\es.exe  $esHash"
           ) | Set-Content -Encoding ASCII "$pkg\SHA256SUMS.txt"
@@ -191,8 +194,8 @@ jobs:
           $verifyDir = Join-Path $env:RUNNER_TEMP "filecheck-gui-win7-check"
           Expand-Archive "FileCheck-v0.1.1-gui-win7-x64.zip" -DestinationPath $verifyDir -Force
           foreach ($relative in @(
-            "FileCheck-GUI.exe",
-            "FileCheck.exe",
+            "FileCheck-GUI\FileCheck-GUI.exe",
+            "advanced\FileCheck.exe",
             "tools\es.exe",
             "tools\Everything.exe",
             "config\rules.json",
@@ -206,9 +209,9 @@ jobs:
 
           Push-Location $env:TEMP
           try {
-            & (Join-Path $verifyDir "FileCheck.exe") selftest | Out-Host
+            & (Join-Path $verifyDir "advanced\FileCheck.exe") selftest | Out-Host
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            & (Join-Path $verifyDir "FileCheck-GUI.exe") --smoke-test
+            & (Join-Path $verifyDir "FileCheck-GUI\FileCheck-GUI.exe") --smoke-test
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
           finally {
