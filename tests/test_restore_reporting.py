@@ -53,6 +53,20 @@ def test_restore_with_no_skip_removes_stale_report(tmp_path: Path) -> None:
     assert not stale.exists()
 
 
+def test_restore_prints_preflight_hash_notice(tmp_path: Path, capsys) -> None:
+    source = tmp_path / "source" / "notice.txt"
+    source.parent.mkdir(parents=True)
+    source.write_text("payload", encoding="utf-8")
+    backup = create_backup([source], tmp_path / "backup")
+    source.unlink()
+
+    args = SimpleNamespace(backup=str(backup), conflict="skip")
+    assert restore_reporting.cmd_restore(args) == 0
+    output = capsys.readouterr().out
+    assert "正在执行恢复前备份完整性校验（SHA-256）" in output
+    assert "校验通过后将自动开始恢复" in output
+
+
 def test_resume_menu_returns_without_manual_path_when_no_task(monkeypatch) -> None:
     monkeypatch.setattr(resume_ui, "discover_operation_states", lambda include_completed=False: [])
     assert resume_ui.menu_resume_flow() == 0
