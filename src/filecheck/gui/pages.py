@@ -83,6 +83,10 @@ class ResultPage(ctk.CTkFrame):
         )
         self.rows_host.grid(row=1, column=0, sticky="nsew", padx=Layout.CARD_PADDING, pady=(0, Layout.CARD_PADDING))
         self.rows_host.grid_columnconfigure(1, weight=1)
+        self.winfo_toplevel().bind("<<FileCheckScanBasisChanged>>", self._scan_basis_changed, add="+")
+
+    def _scan_basis_changed(self, _event=None) -> None:
+        self.clear_result("扫描设置或索引已变化，旧扫描结果不能继续用于备份。请重新扫描。")
 
     def clear_result(self, message: str = "完成一次扫描后，这里将显示结果摘要和候选文件列表。") -> None:
         self.result_host.grid_remove()
