@@ -61,21 +61,22 @@ def test_scan_service_reuses_core_and_writes_outputs(tmp_path: Path, monkeypatch
         ),
         encoding="utf-8",
     )
-    scope = tmp_path / "scope"
-    scope.mkdir()
+    indexed_root = tmp_path / "indexed"
+    indexed_root.mkdir()
     backup_root = tmp_path / "backup"
     output = tmp_path / "scan-results.json"
-    item_path = scope / "机密报告.txt"
+    item_path = indexed_root / "机密报告.txt"
     item_path.write_text("abc", encoding="utf-8")
 
     monkeypatch.setattr(scan_service.cli, "_default_rules_path", lambda: str(rules_path))
     monkeypatch.setattr(scan_service.cli, "_default_scan_output", lambda: str(output))
-    monkeypatch.setattr(scan_service, "current_backup_roots", lambda: [str(backup_root)])
+    monkeypatch.setattr(scan_service, "current_backup_root", lambda: str(backup_root))
+    monkeypatch.setattr(scan_service, "program_dir", lambda: tmp_path / "program")
     monkeypatch.setattr(
         scan_service,
         "load_index_state",
         lambda required=True: {
-            "selected_roots": [str(scope)],
+            "selected_roots": [str(indexed_root)],
             "excluded_roots": [],
             "index_mode": "portable-folder-index",
             "updated_at": "test-index-v1",
@@ -95,7 +96,7 @@ def test_scan_service_reuses_core_and_writes_outputs(tmp_path: Path, monkeypatch
         return [
             {
                 "path": str(item_path),
-                "directory": str(scope),
+                "directory": str(indexed_root),
                 "matched_keywords": ["机密", "报告"],
                 "levels": ["high", "review"],
                 "severity": "high",
@@ -120,8 +121,10 @@ def test_scan_service_reuses_core_and_writes_outputs(tmp_path: Path, monkeypatch
     assert str(backup_root) in captured["kwargs"]["exclude_roots"]
     payload = json.loads(output.read_text(encoding="utf-8"))
     assert payload["items"][0]["severity"] == "high"
-    assert payload["backup_roots"] == [str(backup_root)]
+    assert payload["backup_root"] == str(backup_root)
+    assert "backup_roots" not in payload
     assert payload["path_filter"] is None
+    assert any("全部已索引磁盘" in line for line in task.logs)
     assert any("关键词查询完成" in line for line in task.logs)
 
 
@@ -132,21 +135,20 @@ def test_scan_rejects_missing_backup_settings(tmp_path: Path, monkeypatch: pytes
         encoding="utf-8",
     )
     monkeypatch.setattr(scan_service.cli, "_default_rules_path", lambda: str(rules_path))
-    monkeypatch.setattr(scan_service, "current_backup_roots", lambda: [])
+    monkeypatch.setattr(scan_service, "current_backup_root", lambda: None)
     monkeypatch.setattr(scan_service, "load_index_state", lambda required=True: {"selected_roots": [str(tmp_path)]})
     with pytest.raises(RuntimeError, match="设置"):
         scan_service.run_scan(scan_service.ScanRequest(), FakeTask())
 
 
-def test_scan_scope_must_be_inside_indexed_roots(tmp_path: Path) -> None:
-    indexed = tmp_path / "indexed"
-    outside = tmp_path / "outside"
-    indexed.mkdir()
-    outside.mkdir()
-
-    try:
-        scan_service._validate_scope(str(outside), [str(indexed)])
-    except RuntimeError as exc:
-        assert "不在 FileCheck 已索引范围内" in str(exc)
-    else:
-        raise AssertionError("outside scan scope should be rejected")
+def test_scan_rejects_missing_index_roots(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    rules_path = tmp_path / "rules.json"
+    rules_path.write_text(
+        json.dumps({"keywords": {"high": ["机密"]}, "extensions": ["txt"]}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(scan_service.cli, "_default_rules_path", lambda: str(rules_path))
+    monkeypatch.setattr(scan_service, "current_backup_root", lambda: str(tmp_path / "backup"))
+    monkeypatch.setattr(scan_service, "load_index_state", lambda required=True: {"selected_roots": []})
+    with pytest.raises(RuntimeError, match="创建索引"):
+        scan_service.run_scan(scan_service.ScanRequest(), FakeTask())
