@@ -27,13 +27,14 @@ class ScanPage(ctk.CTkFrame):
         self._on_open_settings = on_open_settings
         self._drive_vars: Dict[str, tk.BooleanVar] = {}
         self._drive_checks = []
+        self._settings_ready = False
         self._index_ready = False
         self._busy = False
 
         PageHeader(
             self,
             "扫描",
-            "先选择需要检查的磁盘并创建 FileCheck 专用索引；索引完成后直接执行关键词扫描。",
+            "选择需要检查的磁盘并创建 FileCheck 专用索引；索引完成后扫描全部已索引磁盘，无需另设扫描范围。",
         ).grid(row=0, column=0, sticky="ew")
 
         index_card = Card(self)
@@ -70,8 +71,10 @@ class ScanPage(ctk.CTkFrame):
         self.index_detail.grid(row=2, column=0, sticky="ew", padx=Layout.CARD_PADDING, pady=(Spacing.SM, 0))
         index_actions = ctk.CTkFrame(index_card, fg_color="transparent")
         index_actions.grid(row=3, column=0, sticky="w", padx=Layout.CARD_PADDING, pady=(Spacing.MD, Layout.CARD_PADDING))
-        self.index_button = SecondaryButton(index_actions, "创建 / 更新索引", command=self._build_index, width=150)
+        self.index_button = SecondaryButton(index_actions, "创建 / 更新索引", command=self._build_index, width=150, state="disabled")
         self.index_button.pack(side="left")
+        self.settings_button = SecondaryButton(index_actions, "打开设置", command=self._on_open_settings, width=105)
+        self.settings_button.pack(side="left", padx=(Spacing.SM, 0))
 
         rules_card = Card(self)
         rules_card.grid(row=2, column=0, sticky="ew", pady=(Spacing.MD, 0))
@@ -106,7 +109,7 @@ class ScanPage(ctk.CTkFrame):
         )
         self.progress_label = ctk.CTkLabel(
             run_card,
-            text="等待创建索引或开始扫描",
+            text="请先完成设置和索引",
             text_color=Palette.TEXT_SECONDARY,
             font=Typography.CAPTION,
             anchor="w",
@@ -137,7 +140,8 @@ class ScanPage(ctk.CTkFrame):
 
     def set_context(self, scan_info, index_info) -> None:
         current = set(str(value).lower() for value in index_info.selected_roots)
-        self._index_ready = bool(index_info.selected_roots)
+        self._settings_ready = bool(index_info.backup_roots)
+        self._index_ready = bool(index_info.selected_roots) and self._settings_ready
         for widget in self._drive_checks:
             widget.destroy()
         self._drive_checks = []
@@ -168,22 +172,31 @@ class ScanPage(ctk.CTkFrame):
                 check.grid(row=idx // 4, column=idx % 4, sticky="w", padx=(0, Spacing.SM), pady=Spacing.XS)
                 self._drive_checks.append(check)
 
-        if self._index_ready:
+        if not self._settings_ready:
+            self.index_state.set_tone("warning", "先完成设置")
+            self.index_detail.configure(
+                text="尚未在“设置”中配置备份目录。请先设置至少一个备份目录，之后才能创建索引和扫描。",
+                text_color=Palette.WARNING,
+            )
+            self.progress_label.configure(text="等待设置备份目录", text_color=Palette.WARNING)
+        elif self._index_ready:
             self.index_state.set_tone("success", "索引已就绪")
             self.index_detail.configure(
                 text=(
                     f"当前索引范围：{'、'.join(index_info.selected_roots)}    模式：{index_info.index_mode}\n"
-                    f"索引数据库：{index_info.database_path or '-'}"
+                    f"索引数据库：{index_info.database_path or '-'}\n"
+                    f"备份目录排除：{'、'.join(index_info.backup_roots)}"
                 ),
                 text_color=Palette.TEXT_SECONDARY,
             )
+            self.progress_label.configure(text="索引已就绪，可以开始扫描", text_color=Palette.SUCCESS)
         else:
             self.index_state.set_tone("warning", "需要创建索引")
-            backup_tip = index_info.backup_root or "尚未设置，请先进入设置"
             self.index_detail.configure(
-                text=f"尚未建立 FileCheck 专用索引。当前备份目录：{backup_tip}",
+                text=f"尚未建立 FileCheck 专用索引。备份目录排除：{'、'.join(index_info.backup_roots)}",
                 text_color=Palette.WARNING,
             )
+            self.progress_label.configure(text="等待创建索引", text_color=Palette.TEXT_SECONDARY)
 
         labels = {"high": "高风险", "sensitive": "敏感", "review": "复核"}
         groups = []
@@ -192,7 +205,8 @@ class ScanPage(ctk.CTkFrame):
         self.rules_label.configure(
             text=(
                 "关键词：" + "  |  ".join(groups) + "\n"
-                "文件类型：" + "、".join(f".{value}" for value in scan_info.extensions)
+                "文件类型：" + "、".join(f".{value}" for value in scan_info.extensions) + "\n"
+                "扫描范围：全部已索引磁盘"
             )
         )
         self._refresh_controls()
@@ -201,26 +215,22 @@ class ScanPage(ctk.CTkFrame):
         return [root for root, var in self._drive_vars.items() if bool(var.get())]
 
     def begin_index(self) -> None:
-        self.winfo_toplevel().event_generate("<<FileCheckScanBasisChanged>>", when="tail")
         self._begin("正在创建 FileCheck 专用索引……")
         self.append_log("索引任务已启动。NTFS 快速索引需要管理员权限。")
 
     def finish_index(self, result) -> None:
         self._busy = False
-        self._index_ready = True
+        self._index_ready = self._settings_ready
         self.progress_bar.stop()
         self.progress_bar.configure(mode="determinate")
         self.progress_bar.set(1.0)
         self.progress_label.configure(text="索引创建完成，可以开始扫描", text_color=Palette.SUCCESS)
         self.index_state.set_tone("success", "索引已就绪")
-        self.index_detail.configure(
-            text=f"当前索引范围：{'、'.join(result.selected_roots)}\n索引数据库：{result.database_path}",
-            text_color=Palette.TEXT_SECONDARY,
-        )
+        self.index_detail.configure(text=f"当前索引范围：{'、'.join(result.selected_roots)}\n索引数据库：{result.database_path}", text_color=Palette.TEXT_SECONDARY)
         self._refresh_controls()
 
     def begin_scan(self) -> None:
-        self._begin("正在扫描索引……")
+        self._begin("正在扫描全部已索引磁盘……")
         self.append_log("扫描任务已启动。扫描完成后会自动生成 JSON 和 CSV 供人工核对。")
 
     def finish_scan(self, total: int) -> None:
@@ -284,8 +294,9 @@ class ScanPage(ctk.CTkFrame):
     def _refresh_controls(self) -> None:
         state = "disabled" if self._busy else "normal"
         for check in self._drive_checks:
-            check.configure(state=state)
-        self.index_button.configure(state=state)
+            check.configure(state=state if self._settings_ready else "disabled")
+        self.index_button.configure(state="normal" if self._settings_ready and not self._busy else "disabled")
+        self.settings_button.configure(state="disabled" if self._busy else "normal")
         self.scan_button.configure(state="normal" if self._index_ready and not self._busy else "disabled")
         self.cancel_button.configure(state="normal" if self._busy else "disabled")
 
