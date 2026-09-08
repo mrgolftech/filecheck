@@ -11,7 +11,7 @@ from filecheck.everything import FILECHECK_INSTANCE, scan_keywords
 from filecheck.portable_everything import load_index_state
 from filecheck.util import now_iso, program_dir, write_json
 
-from .settings_service import current_backup_root
+from .settings_service import current_backup_roots
 from .task_runner import TaskContext
 
 
@@ -23,6 +23,7 @@ class ScanContextInfo:
     selected_roots: List[str]
     excluded_roots: List[str]
     index_mode: str
+    backup_roots: List[str]
 
 
 @dataclass(frozen=True)
@@ -56,9 +57,10 @@ def load_context() -> ScanContextInfo:
     }
     extensions = [str(value).lstrip(".") for value in rules.get("extensions", []) if str(value).strip()]
     exclusions = [str(value) for value in state.get("excluded_roots", [])]
-    backup_root = current_backup_root()
-    if backup_root and backup_root not in exclusions:
-        exclusions.append(backup_root)
+    backup_roots = current_backup_roots()
+    for backup_root in backup_roots:
+        if backup_root not in exclusions:
+            exclusions.append(backup_root)
     return ScanContextInfo(
         rules_path=rules_path,
         keywords=keywords,
@@ -66,6 +68,7 @@ def load_context() -> ScanContextInfo:
         selected_roots=[str(value) for value in state.get("selected_roots", [])],
         excluded_roots=exclusions,
         index_mode=str(state.get("index_mode", "未建立索引")),
+        backup_roots=backup_roots,
     )
 
 
@@ -95,21 +98,21 @@ def run_scan(request: ScanRequest, task: TaskContext) -> ScanResult:
     rules_path = Path(cli._default_rules_path()).expanduser().resolve()
     rules = cli._load_rules(rules_path)
     state = load_index_state(required=True)
+    backup_roots = current_backup_roots()
+    if not backup_roots:
+        raise RuntimeError("尚未在“设置”中配置备份目录，请先完成设置后再扫描")
     task.raise_if_cancelled()
 
     selected_roots = [str(value) for value in state.get("selected_roots", [])]
     exclusions = [str(value) for value in state.get("excluded_roots", [])]
-    backup_root = current_backup_root()
-    for extra in (str(program_dir()), backup_root):
+    for extra in [str(program_dir()), *backup_roots]:
         if extra and extra not in exclusions:
             exclusions.append(extra)
     scope = _validate_scope(request.path_prefix, selected_roots)
 
     task.log("索引范围: " + ("、".join(selected_roots) if selected_roots else "未记录"))
-    if scope:
-        task.log(f"本次扫描范围: {scope}")
-    else:
-        task.log("本次扫描范围: 全部已索引磁盘")
+    task.log("本次扫描范围: 全部已索引磁盘" if not scope else f"本次扫描范围: {scope}")
+    task.log("备份目录排除: " + "、".join(backup_roots))
     task.log(f"规则文件: {rules_path}")
     task.set_progress(None, "正在连接 FileCheck 专用 Everything 实例……")
 
@@ -141,7 +144,8 @@ def run_scan(request: ScanRequest, task: TaskContext) -> ScanResult:
         "selected_roots": selected_roots,
         "excluded_roots": exclusions,
         "index_updated_at": state.get("updated_at"),
-        "backup_root": backup_root,
+        "backup_root": backup_roots[0],
+        "backup_roots": backup_roots,
         "match_path": bool(request.match_path),
         "path_filter": scope,
         "rules": cli._rules_metadata(rules_path),
