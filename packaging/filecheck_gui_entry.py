@@ -13,14 +13,21 @@ def _bootstrap_frozen_runtime() -> None:
     exe_dir = Path(sys.executable).resolve().parent
     bundled_root = Path(getattr(sys, "_MEIPASS", exe_dir))
 
-    # The portable package keeps an editable rules file beside the GUI bundle.
-    # Prefer it so CLI and GUI always share exactly the same configuration.
-    external_rules = exe_dir / "config" / "rules.json"
-    if external_rules.is_file():
-        os.chdir(exe_dir)
+    # The final portable package keeps PyInstaller DLL/PYD files inside the
+    # FileCheck-GUI subdirectory while config/tools/runtime live at package root.
+    parent = exe_dir.parent
+    if (parent / "config" / "rules.json").is_file() or (parent / "tools").is_dir():
+        portable_home = parent
     else:
-        # When the raw PyInstaller onedir output is smoke-tested before package
-        # assembly, materialize the embedded default rules into LOCALAPPDATA.
+        portable_home = exe_dir
+    os.environ.setdefault("FILECHECK_HOME", str(portable_home))
+
+    external_rules = portable_home / "config" / "rules.json"
+    if external_rules.is_file():
+        os.chdir(portable_home)
+    else:
+        # Raw PyInstaller onedir smoke tests do not yet have the assembled
+        # package root. Materialize the embedded default rules into LOCALAPPDATA.
         local_appdata = os.environ.get("LOCALAPPDATA")
         runtime_root = Path(local_appdata) / "FileCheck" if local_appdata else exe_dir / "FileCheck-data"
         config_dir = runtime_root / "config"
@@ -29,11 +36,15 @@ def _bootstrap_frozen_runtime() -> None:
         bundled_rules = bundled_root / "config" / "rules.json"
         if not target_rules.exists() and bundled_rules.is_file():
             shutil.copy2(bundled_rules, target_rules)
+        os.environ["FILECHECK_HOME"] = str(runtime_root)
         os.chdir(runtime_root)
 
-    adjacent_es = exe_dir / "tools" / "es.exe"
+    adjacent_es = Path(os.environ["FILECHECK_HOME"]) / "tools" / "es.exe"
     if adjacent_es.is_file() and not os.environ.get("FILECHECK_ES"):
         os.environ["FILECHECK_ES"] = str(adjacent_es)
+    adjacent_everything = Path(os.environ["FILECHECK_HOME"]) / "tools" / "Everything.exe"
+    if adjacent_everything.is_file() and not os.environ.get("FILECHECK_EVERYTHING"):
+        os.environ["FILECHECK_EVERYTHING"] = str(adjacent_everything)
 
 
 _bootstrap_frozen_runtime()
