@@ -143,6 +143,39 @@ class StatusPill(ctk.CTkLabel):
         self.configure(**updates)
 
 
+class MetricCard(Card):
+    def __init__(self, master, label: str, value: str = "-", tone: str = "neutral", **kwargs):
+        super().__init__(master, **kwargs)
+        self.grid_columnconfigure(0, weight=1)
+        self.value_label = ctk.CTkLabel(
+            self,
+            text=value,
+            text_color=self._value_color(tone),
+            font=Typography.SECTION_TITLE,
+            anchor="w",
+        )
+        self.value_label.grid(row=0, column=0, sticky="ew", padx=Spacing.MD, pady=(Spacing.MD, Spacing.XXS))
+        ctk.CTkLabel(
+            self,
+            text=label,
+            text_color=Palette.TEXT_SECONDARY,
+            font=Typography.SMALL,
+            anchor="w",
+        ).grid(row=1, column=0, sticky="ew", padx=Spacing.MD, pady=(0, Spacing.MD))
+
+    @staticmethod
+    def _value_color(tone: str) -> str:
+        return {
+            "info": Palette.PRIMARY,
+            "success": Palette.SUCCESS,
+            "warning": Palette.WARNING,
+            "danger": Palette.DANGER,
+        }.get(tone, Palette.TEXT)
+
+    def set_value(self, value: str, tone: str = "neutral") -> None:
+        self.value_label.configure(text=value, text_color=self._value_color(tone))
+
+
 class EmptyState(Card):
     def __init__(self, master, title: str, description: str):
         super().__init__(master)
