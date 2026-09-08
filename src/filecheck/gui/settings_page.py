@@ -17,12 +17,13 @@ class SettingsPage(ctk.CTkFrame):
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(2, weight=1)
         self._on_save = on_save
+        self.backup_root = tk.StringVar(value="")
         self.appearance = tk.StringVar(value="浅色")
 
         PageHeader(
             self,
             "设置",
-            "统一管理备份目录、扫描关键词、文件类型和界面主题；保存后扫描与备份直接使用这里的配置。",
+            "统一管理备份根目录、扫描关键词、文件类型和界面主题；保存后扫描与备份直接使用这里的配置。",
         ).grid(row=0, column=0, sticky="ew")
 
         top = ctk.CTkFrame(self, fg_color="transparent")
@@ -36,28 +37,28 @@ class SettingsPage(ctk.CTkFrame):
         header = ctk.CTkFrame(backup_card, fg_color="transparent")
         header.grid(row=0, column=0, columnspan=2, sticky="ew", padx=Layout.CARD_PADDING, pady=(Layout.CARD_PADDING, Spacing.SM))
         header.grid_columnconfigure(0, weight=1)
-        ctk.CTkLabel(header, text="备份目录", text_color=Palette.TEXT, font=Typography.CARD_TITLE, anchor="w").grid(row=0, column=0, sticky="w")
+        ctk.CTkLabel(header, text="统一备份根目录", text_color=Palette.TEXT, font=Typography.CARD_TITLE, anchor="w").grid(row=0, column=0, sticky="w")
         self.save_state = StatusPill(header, "未修改", tone="neutral")
         self.save_state.grid(row=0, column=1, sticky="e")
 
-        self.backup_box = ctk.CTkTextbox(
+        self.backup_entry = ctk.CTkEntry(
             backup_card,
-            fg_color=Palette.SURFACE_SUBTLE,
-            border_width=1,
-            border_color=Palette.BORDER,
+            textvariable=self.backup_root,
+            height=Layout.CONTROL_HEIGHT,
             corner_radius=Radius.CONTROL,
+            border_color=Palette.BORDER,
+            fg_color=Palette.SURFACE_SUBTLE,
             text_color=Palette.TEXT,
             font=Typography.BODY,
-            wrap="none",
-            height=82,
+            placeholder_text="例如 H:\\FileCheckBackup",
         )
-        self.backup_box.grid(row=1, column=0, sticky="ew", padx=(Layout.CARD_PADDING, Spacing.SM))
-        SecondaryButton(backup_card, "添加目录", command=self._pick_backup, width=105).grid(
-            row=1, column=1, sticky="n", padx=(0, Layout.CARD_PADDING)
+        self.backup_entry.grid(row=1, column=0, sticky="ew", padx=(Layout.CARD_PADDING, Spacing.SM))
+        SecondaryButton(backup_card, "选择目录", command=self._pick_backup, width=105).grid(
+            row=1, column=1, padx=(0, Layout.CARD_PADDING)
         )
         ctk.CTkLabel(
             backup_card,
-            text="每行一个备份根目录。索引会排除这里的全部目录；备份时若有多个目录，将在备份页下拉选择。",
+            text="FileCheck 只使用一个统一备份根目录。每次备份会在该目录下生成一个独立的 FC-... 批次子目录；索引会自动排除整个备份根目录。",
             text_color=Palette.TEXT_SECONDARY,
             font=Typography.SMALL,
             anchor="w",
@@ -167,8 +168,7 @@ class SettingsPage(ctk.CTkFrame):
         PrimaryButton(actions, "保存设置", command=self._save, width=120).grid(row=0, column=1, sticky="e")
 
     def set_values(self, data) -> None:
-        self.backup_box.delete("1.0", "end")
-        self.backup_box.insert("1.0", "\n".join(data.backup_roots))
+        self.backup_root.set(data.backup_root)
         for level, box in self.keyword_boxes.items():
             box.delete("1.0", "end")
             box.insert("1.0", "\n".join(data.keywords.get(level, [])))
@@ -195,15 +195,10 @@ class SettingsPage(ctk.CTkFrame):
         return values
 
     def _pick_backup(self) -> None:
-        path = filedialog.askdirectory(title="添加备份根目录")
-        if not path:
-            return
-        existing = [line.strip() for line in self.backup_box.get("1.0", "end").splitlines() if line.strip()]
-        if path not in existing:
-            existing.append(path)
-            self.backup_box.delete("1.0", "end")
-            self.backup_box.insert("1.0", "\n".join(existing))
-        self.save_state.set_tone("warning", "待保存")
+        path = filedialog.askdirectory(title="选择统一备份根目录")
+        if path:
+            self.backup_root.set(path)
+            self.save_state.set_tone("warning", "待保存")
 
     def _theme_changed(self, value: str) -> None:
         mode = "dark" if value == "暗色" else "light"
@@ -221,4 +216,4 @@ class SettingsPage(ctk.CTkFrame):
             for level, box in self.keyword_boxes.items()
         }
         extensions = self._split_values(self.extensions_entry.get())
-        self._on_save(self.backup_box.get("1.0", "end").strip(), keywords, extensions)
+        self._on_save(self.backup_root.get().strip(), keywords, extensions)
