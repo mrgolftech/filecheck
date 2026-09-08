@@ -1,10 +1,9 @@
-name: Build Win7 x64
+name: Build Win7 x86
 
 on:
   workflow_dispatch:
   push:
     branches:
-      - release/win7-x64-work
       - feat/v0.1.1-cli-workflow
       - main
     paths:
@@ -13,47 +12,47 @@ on:
       - "packaging/**"
       - "tests/**"
       - "pyproject.toml"
-      - ".github/workflows/build-win7-x64.yml"
+      - ".github/workflows/build-win7-x86.yml"
 
 jobs:
-  build-win7-x64:
+  build-win7-x86:
     runs-on: windows-latest
 
     env:
       PYTHONPATH: src
-      ES_URL: https://github.com/voidtools/ES/releases/download/1.1.0.37/ES-1.1.0.37.x64.zip
-      ES_ZIP_SHA256: 7A57670D9152068D05876C58858C82FE6D3915A9DF2C819F4DE8801E2929D3A7
-      EVERYTHING_URL: https://www.voidtools.com/Everything-1.4.1.1032.x64.zip
-      EVERYTHING_ZIP_SHA256: 698DF475EC44E638F66F1B6A32D28FEA613CEC78D3B6310E6ABE53431EEB940C
+      ES_URL: https://github.com/voidtools/ES/releases/download/1.1.0.37/ES-1.1.0.37.x86.zip
+      ES_ZIP_SHA256: 35F8FE8C92B44D834CF51239EE345927E44D33C6C86D64B756990B066FA0DA47
+      EVERYTHING_URL: https://www.voidtools.com/Everything-1.4.1.1032.x86.zip
+      EVERYTHING_ZIP_SHA256: 156DB5BEB747D69470518A7B9B55AF11EFC4D3285DDB7CC013C0CC13CED5F237
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Python 3.8.10 x64
+      - name: Setup Python 3.8.10 x86
         uses: actions/setup-python@v5
         with:
           python-version: "3.8.10"
-          architecture: "x64"
+          architecture: "x86"
 
       - name: Verify Python runtime
         shell: pwsh
         run: |
-          python -c "import platform,sys; print(sys.version); print(platform.architecture()); assert sys.version_info[:2] == (3, 8); assert platform.architecture()[0] == '64bit'"
+          python -c "import platform,struct,sys; print(sys.version); print(platform.architecture()); print(struct.calcsize('P')*8); assert sys.version_info[:2] == (3, 8); assert struct.calcsize('P')*8 == 32"
 
-      - name: Install Win7-compatible test/build dependencies
+      - name: Install Win7-compatible x86 test/build dependencies
         shell: pwsh
         run: |
           python -m pip install --upgrade "pip<25" "setuptools<76" "wheel<0.46"
           python -m pip install "colorama==0.4.6" "pytest==7.4.4" "pyinstaller==5.13.2"
 
-      - name: Compile all source with Python 3.8
+      - name: Compile all source with Python 3.8 x86
         shell: pwsh
         run: |
           python -m compileall -q src packaging/filecheck_entry.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Run Python 3.8 regression tests
+      - name: Run Python 3.8 x86 regression tests
         shell: pwsh
         run: |
           python -m pytest -q
@@ -61,7 +60,7 @@ jobs:
           python packaging/filecheck_entry.py selftest
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Build Win7-compatible FileCheck.exe
+      - name: Build Win7-compatible 32-bit FileCheck.exe
         shell: pwsh
         run: |
           pyinstaller `
@@ -74,6 +73,11 @@ jobs:
             --add-data "config/rules.json;config" `
             packaging/filecheck_entry.py
 
+      - name: Verify FileCheck.exe is x86 PE
+        shell: pwsh
+        run: |
+          python -c "from pathlib import Path; import struct; data=Path('dist/FileCheck.exe').read_bytes(); pe=struct.unpack_from('<I',data,0x3c)[0]; machine=struct.unpack_from('<H',data,pe+4)[0]; print(f'PE machine=0x{machine:04X}'); assert machine == 0x014C, 'FileCheck.exe is not x86'"
+
       - name: Smoke test executable on runner
         shell: pwsh
         run: |
@@ -82,7 +86,7 @@ jobs:
           .\dist\FileCheck.exe --help | Out-Host
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Download and verify official ES and Everything
+      - name: Download and verify official x86 ES and Everything
         shell: pwsh
         run: |
           function Invoke-DownloadWithRetry {
@@ -110,37 +114,37 @@ jobs:
             }
           }
 
-          Invoke-DownloadWithRetry -Uri "$env:ES_URL" -OutFile "ES-1.1.0.37.x64.zip"
-          $esActual = (Get-FileHash "ES-1.1.0.37.x64.zip" -Algorithm SHA256).Hash
+          Invoke-DownloadWithRetry -Uri "$env:ES_URL" -OutFile "ES-1.1.0.37.x86.zip"
+          $esActual = (Get-FileHash "ES-1.1.0.37.x86.zip" -Algorithm SHA256).Hash
           if ($esActual -ne $env:ES_ZIP_SHA256) {
             throw "ES archive SHA-256 mismatch. expected=$env:ES_ZIP_SHA256 actual=$esActual"
           }
-          Expand-Archive "ES-1.1.0.37.x64.zip" -DestinationPath "es-dist" -Force
+          Expand-Archive "ES-1.1.0.37.x86.zip" -DestinationPath "es-dist" -Force
           $es = Get-ChildItem "es-dist" -Recurse -File -Filter "es.exe" | Select-Object -First 1
           if (-not $es) { throw "es.exe not found in official ES archive" }
           & $es.FullName -version | Out-Host
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-          Invoke-DownloadWithRetry -Uri "$env:EVERYTHING_URL" -OutFile "Everything-1.4.1.1032.x64.zip"
-          $everythingActual = (Get-FileHash "Everything-1.4.1.1032.x64.zip" -Algorithm SHA256).Hash
+          Invoke-DownloadWithRetry -Uri "$env:EVERYTHING_URL" -OutFile "Everything-1.4.1.1032.x86.zip"
+          $everythingActual = (Get-FileHash "Everything-1.4.1.1032.x86.zip" -Algorithm SHA256).Hash
           if ($everythingActual -ne $env:EVERYTHING_ZIP_SHA256) {
             throw "Everything archive SHA-256 mismatch. expected=$env:EVERYTHING_ZIP_SHA256 actual=$everythingActual"
           }
-          Expand-Archive "Everything-1.4.1.1032.x64.zip" -DestinationPath "everything-dist" -Force
+          Expand-Archive "Everything-1.4.1.1032.x86.zip" -DestinationPath "everything-dist" -Force
           $everything = Get-ChildItem "everything-dist" -Recurse -File -Filter "Everything.exe" | Select-Object -First 1
           if (-not $everything) { throw "Everything.exe not found in official portable archive" }
           Get-Item $everything.FullName | Format-List Name,Length,LastWriteTime
 
-      - name: Assemble Win7 x64 portable package
+      - name: Assemble Win7 x86 portable package
         shell: pwsh
         run: |
-          $pkg = "package\FileCheck-win7-x64"
+          $pkg = "package\FileCheck-win7-x86"
           New-Item -ItemType Directory -Force "$pkg\config" | Out-Null
           New-Item -ItemType Directory -Force "$pkg\tools" | Out-Null
 
           Copy-Item "dist\FileCheck.exe" "$pkg\FileCheck.exe"
           Copy-Item "config\rules.json" "$pkg\config\rules.json"
-          Copy-Item "packaging\README-WIN7-X64.txt" "$pkg\README-WIN7-X64.txt"
+          Copy-Item "packaging\README-WIN7-X86.txt" "$pkg\README-WIN7-X86.txt"
           Copy-Item "packaging\THIRD-PARTY-NOTICES.txt" "$pkg\THIRD-PARTY-NOTICES.txt"
 
           $es = Get-ChildItem "es-dist" -Recurse -File -Filter "es.exe" | Select-Object -First 1
@@ -150,10 +154,10 @@ jobs:
 
           @"
           Bundled components:
-            Everything 1.4.1.1032 x64 portable
+            Everything 1.4.1.1032 x86 portable
             tools\Everything.exe
 
-            Everything Command-line Interface (ES) 1.1.0.37 x64
+            Everything Command-line Interface (ES) 1.1.0.37 x86
             tools\es.exe
 
           FileCheck starts a dedicated Everything instance named FileCheck and stores
@@ -169,16 +173,16 @@ jobs:
             "tools\es.exe  $esHash"
           ) | Set-Content -Encoding ASCII "$pkg\SHA256SUMS.txt"
 
-          Compress-Archive -Path "$pkg\*" -DestinationPath "FileCheck-v0.1.1-win7-x64.zip" -Force
-          $assetHash = (Get-FileHash "FileCheck-v0.1.1-win7-x64.zip" -Algorithm SHA256).Hash
-          Write-Host "Win7 package SHA-256: $assetHash"
+          Compress-Archive -Path "$pkg\*" -DestinationPath "FileCheck-v0.1.1-win7-x86.zip" -Force
+          $assetHash = (Get-FileHash "FileCheck-v0.1.1-win7-x86.zip" -Algorithm SHA256).Hash
+          Write-Host "Win7 x86 package SHA-256: $assetHash"
           Get-Content "$pkg\SHA256SUMS.txt"
 
       - name: Validate package contents and discovery
         shell: pwsh
         run: |
-          $verifyDir = Join-Path $env:RUNNER_TEMP "filecheck-win7-check"
-          Expand-Archive "FileCheck-v0.1.1-win7-x64.zip" -DestinationPath $verifyDir -Force
+          $verifyDir = Join-Path $env:RUNNER_TEMP "filecheck-win7-x86-check"
+          Expand-Archive "FileCheck-v0.1.1-win7-x86.zip" -DestinationPath $verifyDir -Force
           if (-not (Test-Path (Join-Path $verifyDir "FileCheck.exe"))) { throw "FileCheck.exe missing" }
           if (-not (Test-Path (Join-Path $verifyDir "tools\es.exe"))) { throw "tools\es.exe missing" }
           if (-not (Test-Path (Join-Path $verifyDir "tools\Everything.exe"))) { throw "tools\Everything.exe missing" }
@@ -192,10 +196,10 @@ jobs:
             Pop-Location
           }
 
-      - name: Upload Win7 x64 artifact
+      - name: Upload Win7 x86 artifact
         uses: actions/upload-artifact@v4
         with:
-          name: FileCheck-v0.1.1-win7-x64
-          path: FileCheck-v0.1.1-win7-x64.zip
+          name: FileCheck-v0.1.1-win7-x86
+          path: FileCheck-v0.1.1-win7-x86.zip
           if-no-files-found: error
           retention-days: 30

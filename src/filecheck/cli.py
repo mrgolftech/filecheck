@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import os
 import sys
@@ -11,17 +12,23 @@ from pathlib import Path
 from colorama import Fore, Style, just_fix_windows_console
 
 from .backup import BackupError, create_backup, read_backup_manifest, restore_backup, verify_backup
-from .everything import EverythingError, get_status, scan_keywords
+from .everything import FILECHECK_INSTANCE, EverythingError, find_es, scan_keywords
 from .migration import MigrationError, preflight_migration, remove_verified_sources, resume_migration
+from .portable_everything import (
+    PortableEverythingError,
+    configure_and_reindex,
+    ensure_instance,
+    find_everything_exe,
+    load_index_state,
+)
 from .selftest import run_selftest
-from .util import now_iso, sha256_file, write_json
+from .util import now_iso, program_dir, scan_results_dir, sha256_file, write_json
 
 
 _COLOR_ENABLED = False
 
 
 def _configure_console_streams() -> None:
-    """Keep localized/color output working on Windows consoles."""
     global _COLOR_ENABLED
     just_fix_windows_console()
     for stream in (sys.stdout, sys.stderr):
@@ -61,6 +68,15 @@ def _info(text: str) -> str:
     return _paint(text, Fore.CYAN)
 
 
+def _default_rules_path() -> str:
+    return str(program_dir() / "config" / "rules.json")
+
+
+def _default_scan_output() -> str:
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    return str(scan_results_dir() / f"scan-results-{stamp}.json")
+
+
 def _load_rules(path: str | Path) -> dict:
     rules_path = Path(path)
     try:
@@ -74,25 +90,48 @@ def _load_rules(path: str | Path) -> dict:
 
 def _rules_metadata(path: str | Path) -> dict:
     rules_path = Path(path)
-    return {
-        "file": rules_path.name,
-        "sha256": sha256_file(rules_path),
-    }
+    return {"file": rules_path.name, "sha256": sha256_file(rules_path)}
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:
-    status = get_status(args.es)
-    print(_success("Everything 环境检查通过"))
-    print(f"  es.exe: {_info(status.es_path)}")
+    es_path = find_es(args.es)
+    everything_path = find_everything_exe(args.everything)
+    print(_success("FileCheck 便携运行环境检查通过"))
+    print(f"  FileCheck 目录: {_info(str(program_dir()))}")
+    print(f"  Everything.exe: {_info(str(everything_path))}")
+    print(f"  es.exe: {_info(str(es_path))}")
+    state = load_index_state(required=False)
+    if state is None:
+        print(_warning("  专用索引: 尚未建立；下一步请选择磁盘和备份目录建立索引。"))
+        return 0
+    status = ensure_instance(args.es, args.everything)
+    print(f"  FileCheck Everything 实例: {_info(status.everything_version)}")
     print(f"  ES CLI: {_info(status.es_version)}")
-    print(f"  Everything: {_info(status.everything_version)}")
+    print(f"  已索引范围: {', '.join(state.get('selected_roots', []))}")
+    print(f"  备份排除目录: {state.get('backup_root', '-')}")
+    return 0
+
+
+def cmd_index(args: argparse.Namespace) -> int:
+    result = configure_and_reindex(
+        args.drive,
+        args.backup_root,
+        everything=args.everything,
+        es=args.es,
+    )
+    print(_success("FileCheck 专用索引建立完成"))
+    print(f"  Everything: {result.status.everything_version}")
+    print(f"  实例: {FILECHECK_INSTANCE}")
+    print(f"  索引范围: {', '.join(result.selected_roots)}")
+    print(f"  配置文件: {result.config_path}")
+    print(f"  数据库: {result.database_path}")
+    print(f"  自动排除: {', '.join(result.excluded_roots)}")
     return 0
 
 
 def _print_scan(items: list[dict], *, limit: int = 100) -> None:
     counts = Counter(item["severity"] for item in items)
-    heading = f"共发现 {len(items)} 个候选文件"
-    print(f"\n{_paint(heading, bright=True)}")
+    print(f"\n{_paint(f'共发现 {len(items)} 个候选文件', bright=True)}")
     print(
         "  "
         + _paint(f"high={counts.get('high', 0)}", Fore.RED, bright=True)
@@ -101,40 +140,50 @@ def _print_scan(items: list[dict], *, limit: int = 100) -> None:
         + "  "
         + _paint(f"review={counts.get('review', 0)}", Fore.CYAN)
     )
-
     effective_limit = max(0, int(limit))
     display_rows = list(enumerate(items[:effective_limit], start=1)) if effective_limit else []
     grouped: dict[str, list[tuple[int, dict]]] = defaultdict(list)
     for index, item in display_rows:
         grouped[item["directory"]].append((index, item))
-
     for directory, rows in grouped.items():
         print(f"\n{_info(f'[{directory}]')}  ({len(rows)} 个已显示)")
         for index, item in rows:
             keywords = ", ".join(item["matched_keywords"])
             severity = _severity_text(item["severity"])
-            filename = Path(item["path"]).name
-            print(
-                f"  {index:>5}. [{severity}] "
-                f"{filename}  {_paint(f'<{keywords}>', Fore.MAGENTA)}"
-            )
-
+            print(f"  {index:>5}. [{severity}] {Path(item['path']).name}  {_paint(f'<{keywords}>', Fore.MAGENTA)}")
     if len(items) > len(display_rows):
-        print(
-            _warning(
-                f"\n候选较多，仅显示前 {len(display_rows)} 个；完整 {len(items)} 个结果均已写入 JSON。"
+        print(_warning(f"\n候选较多，仅显示前 {len(display_rows)} 个；完整结果已写入 JSON/CSV。"))
+
+
+def _write_scan_csv(json_output: Path, items: list[dict]) -> Path:
+    csv_path = json_output.with_suffix(".csv")
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    with csv_path.open("w", encoding="utf-8-sig", newline="") as fh:
+        writer = csv.writer(fh)
+        writer.writerow(["序号", "源文件完整路径", "目录", "命中关键词", "级别", "大小(字节)", "当前可访问"])
+        for index, item in enumerate(items, start=1):
+            writer.writerow(
+                [
+                    index,
+                    item["path"],
+                    item["directory"],
+                    ",".join(item["matched_keywords"]),
+                    item["severity"],
+                    "" if item.get("size") is None else item["size"],
+                    "是" if item.get("accessible") else "否",
+                ]
             )
-        )
+    return csv_path
 
 
 def cmd_scan(args: argparse.Namespace) -> int:
     rules = _load_rules(args.rules)
-    status = get_status(args.es)
-    print(
-        f"使用 Everything {_info(status.everything_version)} / "
-        f"ES {_info(status.es_version)}"
-    )
-    print("正在按关键词查询 Everything 索引……")
+    state = load_index_state(required=True)
+    status = ensure_instance(args.es, args.everything)
+    exclusions = list(state.get("excluded_roots", []))
+    print(f"使用 FileCheck 专用 Everything {status.everything_version} / ES {status.es_version}")
+    print(f"索引范围: {', '.join(state.get('selected_roots', []))}")
+    print("正在按关键词查询专用索引……")
     items = scan_keywords(
         rules["keywords"],
         rules["extensions"],
@@ -142,36 +191,29 @@ def cmd_scan(args: argparse.Namespace) -> int:
         max_results_per_keyword=int(rules.get("max_results_per_keyword", 100000)),
         match_path=args.match_path,
         path_prefix=args.path,
+        instance=FILECHECK_INSTANCE,
+        exclude_roots=exclusions,
     )
     _print_scan(items, limit=args.list_limit)
-
     output = Path(args.output)
     payload = {
         "schema_version": 1,
         "created_at": now_iso(),
-        "engine": "everything-1.4",
+        "engine": "everything-1.4-portable",
+        "instance": FILECHECK_INSTANCE,
         "everything_version": status.everything_version,
+        "selected_roots": state.get("selected_roots", []),
+        "excluded_roots": exclusions,
         "match_path": args.match_path,
         "path_filter": args.path,
         "rules": _rules_metadata(args.rules),
         "items": items,
     }
     write_json(output, payload)
-    resolved_output = output.resolve()
-    print(f"\n扫描结果已保存: {_info(str(resolved_output))}")
-    print(_warning("注意：结果仅表示关键词命中，不等同于文件性质认定。"))
-    if items:
-        print(_info("下一步可直接将本次扫描的全部候选批量备份："))
-        print(
-            "  filecheck backup --from-scan "
-            f'"{resolved_output}" --dest <备份目录>'
-        )
-        print(_info("如需在备份全量验证后移除这些源文件，使用显式 migrate 命令："))
-        print(
-            "  filecheck migrate --from-scan "
-            f'"{resolved_output}" --dest <备份目录>'
-        )
-        print(_warning("scan 本身不会备份、移动或删除任何文件。"))
+    csv_path = _write_scan_csv(output, items)
+    print(f"\n扫描 JSON: {_info(str(output.resolve()))}")
+    print(f"人工核对 CSV: {_info(str(csv_path.resolve()))}")
+    print(_warning("关键词命中只表示候选，请先人工核对，再进入备份。"))
     return 0
 
 
@@ -209,14 +251,10 @@ def _load_scan_payload(scan_path: str | Path) -> dict:
 
 
 def _sources_from_scan(scan_path: str | Path, selection: str | None = None) -> list[str]:
-    payload = _load_scan_payload(scan_path)
-    items = payload["items"]
+    items = _load_scan_payload(scan_path)["items"]
     if not items:
         raise RuntimeError("扫描结果中没有候选文件")
-    if selection:
-        indexes = _parse_selection(selection, len(items))
-    else:
-        indexes = list(range(1, len(items) + 1))
+    indexes = _parse_selection(selection, len(items)) if selection else list(range(1, len(items) + 1))
     return [items[i - 1]["path"] for i in indexes]
 
 
@@ -234,15 +272,8 @@ def _progress(stage: str, current: int, total: int, path: str) -> None:
         return
     if current != 1 and current != total and current % 100 != 0:
         return
-    labels = {
-        "copy": "复制",
-        "verify": "校验",
-        "restore": "恢复",
-        "recheck": "源文件复核",
-        "remove": "源文件移除",
-    }
-    label = labels.get(stage, stage)
-    print(f"  {label}: {current}/{total}")
+    labels = {"copy": "复制", "verify": "校验", "restore": "恢复", "recheck": "源文件复核", "remove": "源文件删除"}
+    print(f"  {labels.get(stage, stage)}: {current}/{total}")
 
 
 def _processing_rate(total_bytes: int, elapsed: float) -> str | None:
@@ -254,20 +285,13 @@ def _processing_rate(total_bytes: int, elapsed: float) -> str | None:
 def cmd_backup(args: argparse.Namespace) -> int:
     sources = _resolve_sources(args)
     if args.from_scan and not args.select:
-        print(f"准备批量备份扫描结果中的全部候选: {len(sources)} 个文件")
-
+        print(f"准备目录备份扫描结果中的全部候选: {len(sources)} 个文件")
     started = time.perf_counter()
-    result = create_backup(sources, args.dest, zip_mode=args.zip, progress=_progress)
+    result = create_backup(sources, args.dest, progress=_progress)
     elapsed = time.perf_counter() - started
-
-    # create_backup only publishes after a full SHA-256 verification. Re-reading
-    # every payload here merely to print metadata used to add another complete
-    # disk pass, so read the already-validated manifest without hashing again.
     manifest = read_backup_manifest(result)
-    total_bytes = int(
-        manifest.get("source_bytes_total", sum(int(i["size"]) for i in manifest["items"]))
-    )
-    print(_success("备份完成并通过全量 SHA-256 校验"))
+    total_bytes = int(manifest.get("source_bytes_total", sum(int(i["size"]) for i in manifest["items"])))
+    print(_success("目录备份完成并通过全量 SHA-256 校验"))
     print(f"  路径: {_info(str(result.resolve()))}")
     print(f"  文件数: {len(manifest['items'])}")
     print(f"  总大小: {total_bytes} 字节")
@@ -275,7 +299,7 @@ def cmd_backup(args: argparse.Namespace) -> int:
     rate = _processing_rate(total_bytes, elapsed)
     if rate:
         print(f"  平均处理吞吐(含校验): {rate}")
-    print(_warning("backup 不会移除源文件；需要移除时必须显式使用 migrate。"))
+    print(_warning("backup 永远不删除源文件。请人工检查备份目录并再次 verify 后，再执行 remove-sources。"))
     return 0
 
 
@@ -300,74 +324,64 @@ def cmd_restore(args: argparse.Namespace) -> int:
 
 def _confirm_source_removal(files: int) -> bool:
     try:
-        answer = input(
-            f"备份与源文件复核均已通过。下一步将移除 {files} 个 manifest 源文件。"
-            "输入 YES 继续: "
-        )
+        answer = input(f"备份与源文件复核均已通过。下一步将删除 {files} 个 manifest 源文件。输入 YES 继续: ")
     except (EOFError, KeyboardInterrupt):
         return False
     return answer.strip().upper() == "YES"
 
 
 def _print_migration_result(state_file: Path, state: dict) -> int:
-    print(f"  状态文件: {_info(str(state_file))}")
+    print(f"  删除状态: {_info(str(state_file))}")
     print(f"  deleted={state.get('deleted', 0)}")
     print(f"  already_absent={state.get('already_absent', 0)}")
     print(f"  failed={state.get('failed', 0)}")
     if state.get("failed", 0):
-        print(_warning("部分源文件未移除。关闭占用程序/处理权限后可执行 migrate-resume。"))
-        print(f'  filecheck migrate-resume "{state_file}"')
+        print(_warning("部分源文件未删除；已跳过并继续其余文件。关闭占用程序后可继续删除。"))
+        print(f"  未删除清单: {state_file.parent / 'not-deleted.txt'}")
+        print(f'  filecheck remove-resume "{state_file.parent}"')
         return 2
-    print(_success("迁移完成：已验证备份仍可用，manifest 中的源文件已移除。"))
+    print(_success("源文件删除完成；备份和 manifest 保持不变。"))
     return 0
+
+
+def cmd_remove_sources(args: argparse.Namespace) -> int:
+    summary = preflight_migration(args.backup, progress=_progress)
+    print(_success("完整备份及全部源文件 SHA-256 复核通过"))
+    print(f"  文件数: {summary['files']}")
+    if not args.yes and not _confirm_source_removal(summary["files"]):
+        print(_warning("已取消源文件删除；备份保持不变。"))
+        return 0
+    state_file, state = remove_verified_sources(args.backup, progress=_progress, preflight=False)
+    return _print_migration_result(state_file, state)
+
+
+def cmd_remove_resume(args: argparse.Namespace) -> int:
+    if not args.yes:
+        try:
+            answer = input("将重新验证备份并继续处理未删除文件。输入 YES 继续: ")
+        except (EOFError, KeyboardInterrupt):
+            answer = ""
+        if answer.strip().upper() != "YES":
+            print(_warning("已取消继续删除。"))
+            return 0
+    state_file, state = resume_migration(args.state, progress=_progress)
+    return _print_migration_result(state_file, state)
 
 
 def cmd_migrate(args: argparse.Namespace) -> int:
     sources = _resolve_sources(args)
-    if args.from_scan and not args.select:
-        print(f"准备迁移扫描结果中的全部候选: {len(sources)} 个文件")
-
-    backup = create_backup(sources, args.dest, zip_mode=args.zip, progress=_progress)
-    # The creation path has already completed one full payload verification.
-    # preflight_migration below performs a fresh backup verification immediately
-    # before any destructive source-removal decision, so an extra pass here is
-    # redundant and was a significant cost for multi-gigabyte batches.
-    manifest = read_backup_manifest(backup)
-    print(_success("第一阶段完成：备份已创建并通过全量 SHA-256 校验"))
-    print(f"  备份: {_info(str(backup.resolve()))}")
-    print(f"  文件数: {len(manifest['items'])}")
-
+    backup = create_backup(sources, args.dest, progress=_progress)
+    print(_success(f"备份完成: {backup}"))
     summary = preflight_migration(backup, progress=_progress)
-    print(_success("第二阶段完成：全部源文件再次 SHA-256 复核通过"))
-    print(f"  文件数: {summary['files']}")
-    print(f"  总大小: {summary['bytes']} 字节")
-
     if not args.yes and not _confirm_source_removal(summary["files"]):
-        print(_warning("已取消源文件移除。已验证备份保留不变。"))
+        print(_warning("已取消源文件删除；已验证备份保留。"))
         return 0
-
-    state_file, state = remove_verified_sources(
-        backup,
-        progress=_progress,
-        preflight=False,
-    )
+    state_file, state = remove_verified_sources(backup, progress=_progress, preflight=False)
     return _print_migration_result(state_file, state)
 
 
 def cmd_migrate_resume(args: argparse.Namespace) -> int:
-    state_file = Path(args.state).expanduser().resolve()
-    if not args.yes:
-        try:
-            answer = input(
-                "将重新验证备份并继续处理迁移状态中尚未移除的源文件。输入 YES 继续: "
-            )
-        except (EOFError, KeyboardInterrupt):
-            answer = ""
-        if answer.strip().upper() != "YES":
-            print(_warning("已取消继续迁移。"))
-            return 0
-    result_path, state = resume_migration(state_file, progress=_progress)
-    return _print_migration_result(result_path, state)
+    return cmd_remove_resume(args)
 
 
 def cmd_selftest(args: argparse.Namespace) -> int:
@@ -375,67 +389,81 @@ def cmd_selftest(args: argparse.Namespace) -> int:
     for name, state in report.items():
         color = Fore.GREEN if str(state).startswith("PASS") else Fore.YELLOW
         print(f"{name}: {_paint(str(state), color, bright=True)}")
-    print(_success("FileCheck 备份/验证/恢复/迁移自检通过。"))
+    print(_success("FileCheck 目录备份/验证/删除/恢复自检通过。"))
     return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="filecheck",
-        description="FileCheck V0.1 - Everything 1.4 加速的离线文件自查、批量备份、迁移和恢复工具",
+        description="FileCheck v0.1.1 - portable Everything 索引、目录备份、验证、安全删除和恢复",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p = sub.add_parser("doctor", help="检查 Everything 1.4 / es.exe 环境")
-    p.add_argument("--es", help="显式指定 es.exe 路径")
+    p = sub.add_parser("doctor", help="检查 FileCheck、portable Everything 和 ES 环境")
+    p.add_argument("--es")
+    p.add_argument("--everything")
     p.set_defaults(func=cmd_doctor)
 
-    p = sub.add_parser("scan", help="调用 Everything 按关键词快速扫描文件名/路径")
-    p.add_argument("--rules", default="config/rules.json", help="规则 JSON 路径")
-    p.add_argument("--es", help="显式指定 es.exe 路径")
-    p.add_argument("--path", help="仅保留该目录/盘符下的结果，例如 D:\\")
+    p = sub.add_parser("index", help="选择磁盘/目录并建立 FileCheck 专用 portable Everything 索引")
+    p.add_argument("--drive", action="append", required=True, help="要索引的盘符/目录；可重复，例如 --drive C: --drive D:")
+    p.add_argument("--backup-root", required=True, help="统一备份根目录；会自动从索引和扫描结果中排除")
+    p.add_argument("--es")
+    p.add_argument("--everything")
+    p.set_defaults(func=cmd_index)
+
+    p = sub.add_parser("scan", help="查询 FileCheck 专用索引并保存 JSON/CSV")
+    p.add_argument("--rules", default=_default_rules_path(), help="规则 JSON 路径")
+    p.add_argument("--es")
+    p.add_argument("--everything")
+    p.add_argument("--path", help="高级用法：仅扫描已建索引中的指定子目录")
     p.add_argument("--match-path", action="store_true", help="关键词同时匹配完整路径；默认只匹配文件名")
-    p.add_argument("--output", default="scan-results.json", help="扫描结果 JSON")
-    p.add_argument("--list-limit", type=int, default=100, help="控制台最多显示多少个候选；0 表示只显示汇总")
+    p.add_argument("--output", default=_default_scan_output(), help="扫描结果 JSON")
+    p.add_argument("--list-limit", type=int, default=100)
     p.set_defaults(func=cmd_scan)
 
-    p = sub.add_parser("backup", help="批量复制/压缩备份，并记录原始路径和 SHA-256")
-    p.add_argument("sources", nargs="*", help="要备份的文件或目录")
-    p.add_argument("--dest", required=True, help="备份目标根目录")
-    p.add_argument("--zip", action="store_true", help="生成 ZIP 包而不是目录备份")
-    p.add_argument("--from-scan", help="从 scan-results.json 批量备份候选；默认处理全部候选")
-    p.add_argument("--select", help="可选：仅处理候选编号，例如 1,3-5；省略时处理全部")
+    p = sub.add_parser("backup", help="创建人工可读的目录备份并全量校验")
+    p.add_argument("sources", nargs="*")
+    p.add_argument("--dest", required=True)
+    p.add_argument("--from-scan", help="从 scan-results.json 批量备份；默认全部候选")
+    p.add_argument("--select", help="高级过滤，例如 1,3-5")
     p.set_defaults(func=cmd_backup)
 
-    p = sub.add_parser("migrate", help="先批量备份并全量复核，再经一次确认移除 manifest 中的源文件")
-    p.add_argument("sources", nargs="*", help="要迁移的文件或目录")
-    p.add_argument("--dest", required=True, help="备份目标根目录")
-    p.add_argument("--zip", action="store_true", help="生成 ZIP 备份后再进入源文件移除阶段")
-    p.add_argument("--from-scan", help="从 scan-results.json 批量迁移候选；默认处理全部候选")
-    p.add_argument("--select", help="可选：仅处理候选编号，例如 1,3-5；省略时处理全部")
-    p.add_argument("--yes", action="store_true", help="跳过批次级 YES 确认；适用于明确的无人值守调用")
-    p.set_defaults(func=cmd_migrate)
-
-    p = sub.add_parser("migrate-resume", help="重新验证备份后继续处理上次未完成的源文件移除")
-    p.add_argument("state", help="FC-xxxx[.zip].migration.json 状态文件")
-    p.add_argument("--yes", action="store_true", help="跳过批次级 YES 确认")
-    p.set_defaults(func=cmd_migrate_resume)
-
-    p = sub.add_parser("verify", help="对备份逐文件执行大小 + SHA-256 全量验证")
-    p.add_argument("backup", help="备份批次目录或 ZIP 文件")
+    p = sub.add_parser("verify", help="对目录备份逐文件执行大小 + SHA-256 全量验证")
+    p.add_argument("backup", help="已解压/原生目录备份批次")
     p.set_defaults(func=cmd_verify)
 
-    p = sub.add_parser("restore", help="验证整个备份后，依据 manifest 原子恢复到原始路径")
-    p.add_argument("backup", help="备份批次目录或 ZIP 文件")
-    p.add_argument(
-        "--conflict",
-        choices=("skip", "overwrite", "rename"),
-        default="skip",
-        help="原路径已有文件时的策略；overwrite 也会先恢复到临时文件并校验后再原子替换",
-    )
+    p = sub.add_parser("remove-sources", help="验证备份和源文件后，删除 manifest 列出的源文件")
+    p.add_argument("backup", help="目录备份批次")
+    p.add_argument("--yes", action="store_true")
+    p.set_defaults(func=cmd_remove_sources)
+
+    p = sub.add_parser("remove-resume", help="继续 source-removal.json 中失败/未完成的删除")
+    p.add_argument("state", help="备份批次目录或 source-removal.json")
+    p.add_argument("--yes", action="store_true")
+    p.set_defaults(func=cmd_remove_resume)
+
+    # Backward-compatible advanced aliases. They are intentionally not part of
+    # the recommended interactive workflow.
+    p = sub.add_parser("migrate", help=argparse.SUPPRESS)
+    p.add_argument("sources", nargs="*")
+    p.add_argument("--dest", required=True)
+    p.add_argument("--from-scan")
+    p.add_argument("--select")
+    p.add_argument("--yes", action="store_true")
+    p.set_defaults(func=cmd_migrate)
+
+    p = sub.add_parser("migrate-resume", help=argparse.SUPPRESS)
+    p.add_argument("state")
+    p.add_argument("--yes", action="store_true")
+    p.set_defaults(func=cmd_migrate_resume)
+
+    p = sub.add_parser("restore", help="验证目录备份后，依据 manifest 恢复到各自原始路径")
+    p.add_argument("backup", help="已解压/原生目录备份批次")
+    p.add_argument("--conflict", choices=("skip", "overwrite", "rename"), default="skip")
     p.set_defaults(func=cmd_restore)
 
-    p = sub.add_parser("selftest", help="在临时目录执行扫描后批量备份相关逻辑及目录/ZIP备份、迁移、恢复回环自检")
+    p = sub.add_parser("selftest", help="执行目录备份、验证、删除、恢复回环自检")
     p.set_defaults(func=cmd_selftest)
     return parser
 
@@ -446,7 +474,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         return int(args.func(args) or 0)
-    except (EverythingError, MigrationError, BackupError, RuntimeError, ValueError, OSError) as exc:
+    except (PortableEverythingError, EverythingError, MigrationError, BackupError, RuntimeError, ValueError, OSError) as exc:
         print(_paint(f"错误: {exc}", Fore.RED, bright=True), file=sys.stderr)
         return 1
 

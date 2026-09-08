@@ -38,9 +38,9 @@ def _bootstrap_frozen_runtime() -> None:
             shutil.copy2(bundled_rules, target_rules)
         os.chdir(runtime_root)
 
-    # ES is intentionally not redistributed in the FileCheck package. If the
-    # user puts es.exe in the adjacent tools directory, make that location
-    # explicit before the working directory may change to LOCALAPPDATA.
+    # Official v0.1.1 portable packages bundle ES beside Everything under the
+    # adjacent tools directory.  Record its explicit path before the working
+    # directory can change (for example when FileCheck.exe is copied alone).
     adjacent_es = exe_dir / "tools" / "es.exe"
     if adjacent_es.is_file() and not os.environ.get("FILECHECK_ES"):
         os.environ["FILECHECK_ES"] = str(adjacent_es)

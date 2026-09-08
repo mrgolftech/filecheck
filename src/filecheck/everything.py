@@ -5,13 +5,17 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
+from typing import Callable, Iterable
 
 
 class EverythingError(RuntimeError):
     pass
+
+
+FILECHECK_INSTANCE = "FileCheck"
 
 
 @dataclass(frozen=True)
@@ -19,6 +23,7 @@ class EverythingStatus:
     es_path: str
     es_version: str
     everything_version: str
+    instance: str | None = None
 
 
 def _decode(data: bytes) -> str:
@@ -36,19 +41,12 @@ def find_es(explicit: str | None = None) -> Path:
         candidates.append(Path(explicit))
     if os.environ.get("FILECHECK_ES"):
         candidates.append(Path(os.environ["FILECHECK_ES"]))
-
-    # The Win64 release bundles ES next to FileCheck.exe under tools/.  Do not
-    # depend on the caller's current working directory: users may launch the EXE
-    # from Explorer, a shortcut, PowerShell, or another working directory.
     if getattr(sys, "frozen", False):
         candidates.append(Path(sys.executable).resolve().parent / "tools" / "es.exe")
-
     candidates.append(Path.cwd() / "tools" / "es.exe")
-
     located = shutil.which("es.exe") or shutil.which("es")
     if located:
         candidates.append(Path(located))
-
     for env_name in ("ProgramFiles", "ProgramFiles(x86)"):
         base = os.environ.get(env_name)
         if base:
@@ -67,10 +65,9 @@ def find_es(explicit: str | None = None) -> Path:
         seen.add(key)
         if candidate.is_file():
             return candidate
-
     raise EverythingError(
-        "未找到 es.exe。Win64 发布包应自带 tools/es.exe；开发版可将 ES CLI 放到 "
-        "tools/es.exe、加入 PATH，或设置 FILECHECK_ES 环境变量。"
+        "未找到 es.exe。正式发布包应自带 tools/es.exe；开发版可放到 tools/es.exe、"
+        "加入 PATH，或设置 FILECHECK_ES。"
     )
 
 
@@ -81,9 +78,6 @@ def _creationflags() -> int:
 
 
 def _build_command(es_path: Path, args: list[str], *, argv_mode: bool) -> list[str]:
-    # ES <= 1.1.0.36 used a custom Windows command-line parser which can split
-    # arguments produced by Python/PowerShell incorrectly. ES 1.1.0.37 added
-    # -argv to opt into CommandLineToArgvW. It must be the first ES parameter.
     command = [str(es_path)]
     if argv_mode:
         command.append("-argv")
@@ -91,12 +85,18 @@ def _build_command(es_path: Path, args: list[str], *, argv_mode: bool) -> list[s
     return command
 
 
+def _with_instance(args: list[str], instance: str | None) -> list[str]:
+    if not instance:
+        return list(args)
+    return ["-instance", instance, *args]
+
+
 def _raise_for_es_error(proc: subprocess.CompletedProcess[bytes], stdout: str, stderr: str) -> None:
     if proc.returncode == 0:
         return
     detail = stderr or stdout or f"exit={proc.returncode}"
     if proc.returncode in (7, 8):
-        detail += "；请确认 Everything 1.4 已启动且索引已加载"
+        detail += "；请确认 FileCheck 专用 Everything 实例已启动且索引已加载"
     raise EverythingError(detail)
 
 
@@ -107,9 +107,8 @@ def _run(
     *,
     argv_mode: bool = False,
 ) -> str:
-    command = _build_command(es_path, args, argv_mode=argv_mode)
     proc = subprocess.run(
-        command,
+        _build_command(es_path, args, argv_mode=argv_mode),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         timeout=timeout,
@@ -129,21 +128,9 @@ def _run_export_txt(
     *,
     argv_mode: bool = True,
 ) -> str:
-    """Run an ES search through its UTF-8 text export path.
-
-    ES console stdout is constrained by the active Windows console code page.
-    Characters that are not representable there can already be replaced with
-    '?' before Python receives stdout. That is irreversible and can corrupt a
-    filename in scan-results.json. Exporting to a UTF-8 file avoids the console
-    encoding boundary and preserves the exact Unicode path.
-    """
-
+    """Run ES through its UTF-8 file export channel to preserve exact paths."""
     with tempfile.TemporaryDirectory(prefix="filecheck-es-") as temp_dir:
         export_path = Path(temp_dir) / "results.txt"
-
-        # Keep the search expression as the final argument. ES accepts export
-        # options alongside a search, and -utf8-bom makes the export encoding
-        # explicit and unambiguous for us to decode.
         if args:
             export_args = [
                 *args[:-1],
@@ -154,10 +141,8 @@ def _run_export_txt(
             ]
         else:
             export_args = ["-export-txt", str(export_path), "-utf8-bom"]
-
-        command = _build_command(es_path, export_args, argv_mode=argv_mode)
         proc = subprocess.run(
-            command,
+            _build_command(es_path, export_args, argv_mode=argv_mode),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             timeout=timeout,
@@ -167,10 +152,8 @@ def _run_export_txt(
         stdout = _decode(proc.stdout).strip()
         stderr = _decode(proc.stderr).strip()
         _raise_for_es_error(proc, stdout, stderr)
-
         if not export_path.exists():
             raise EverythingError("ES 查询成功但未生成 UTF-8 导出结果文件")
-
         try:
             return export_path.read_bytes().decode("utf-8-sig").strip()
         except UnicodeDecodeError as exc:
@@ -187,20 +170,80 @@ def _version_tuple(value: str) -> tuple[int, ...]:
     return tuple(parts)
 
 
-def get_status(es: str | None = None) -> EverythingStatus:
+def get_status(es: str | None = None, *, instance: str | None = None) -> EverythingStatus:
     es_path = find_es(es)
     es_version = _run(es_path, ["-version"])
-    everything_version = _run(es_path, ["-get-everything-version"])
+    everything_version = _run(
+        es_path,
+        _with_instance(["-get-everything-version"], instance),
+        argv_mode=True,
+    )
     if not everything_version.startswith("1.4."):
         raise EverythingError(
-            f"当前 Everything 版本为 {everything_version}，V0.1 按 1.4.x 环境验证。"
+            f"当前 Everything 版本为 {everything_version}，FileCheck v0.1.1 按 1.4.x 环境验证。"
         )
     if _version_tuple(es_version) < (1, 1, 0, 37):
         raise EverythingError(
-            f"当前 ES CLI 版本为 {es_version}；V0.1 要求 ES 1.1.0.37 或更高版本，"
-            "以使用 -argv 避免 Windows 参数解析错误。"
+            f"当前 ES CLI 版本为 {es_version}；要求 ES 1.1.0.37 或更高版本。"
         )
-    return EverythingStatus(str(es_path), es_version, everything_version)
+    return EverythingStatus(str(es_path), es_version, everything_version, instance)
+
+
+def reindex(
+    es: str | None = None,
+    *,
+    instance: str | None = None,
+    timeout: int = 900,
+    progress: Callable[[float], None] | None = None,
+    interval: float = 1.0,
+) -> None:
+    """Force an Everything rebuild and optionally report live elapsed time.
+
+    ES 1.1 / Everything 1.4 does not expose a reliable per-file percentage.
+    The ES -reindex process stays alive until the rebuild is complete, so we
+    can report a truthful live busy/elapsed status without inventing a percent.
+    """
+    es_path = find_es(es)
+    args = _with_instance(["-reindex"], instance)
+    if progress is None:
+        _run(es_path, args, timeout=timeout, argv_mode=True)
+        return
+
+    command = _build_command(es_path, args, argv_mode=True)
+    proc = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        creationflags=_creationflags(),
+    )
+    started = time.monotonic()
+    tick = max(0.2, float(interval))
+    stdout_bytes = b""
+    stderr_bytes = b""
+    try:
+        while True:
+            elapsed = time.monotonic() - started
+            remaining = float(timeout) - elapsed
+            if remaining <= 0:
+                proc.kill()
+                proc.communicate()
+                raise EverythingError(f"Everything 索引超时（>{timeout} 秒）")
+            try:
+                stdout_bytes, stderr_bytes = proc.communicate(timeout=min(tick, remaining))
+                break
+            except subprocess.TimeoutExpired:
+                progress(time.monotonic() - started)
+        progress(time.monotonic() - started)
+    except BaseException:
+        if proc.poll() is None:
+            proc.kill()
+            proc.communicate()
+        raise
+
+    stdout = _decode(stdout_bytes).strip()
+    stderr = _decode(stderr_bytes).strip()
+    completed = subprocess.CompletedProcess(command, int(proc.returncode or 0), stdout_bytes, stderr_bytes)
+    _raise_for_es_error(completed, stdout, stderr)
 
 
 def _safe_keyword(keyword: str) -> str:
@@ -208,10 +251,17 @@ def _safe_keyword(keyword: str) -> str:
     if not keyword:
         raise ValueError("关键词不能为空")
     if '"' in keyword:
-        raise ValueError(f"V0.1 暂不支持包含双引号的关键词: {keyword!r}")
-    # Quotes are Everything search syntax (exact phrase), not shell quoting.
-    # With ES 1.1.0.37 -argv they survive Python's Windows argv handling safely.
+        raise ValueError(f"暂不支持包含双引号的关键词: {keyword!r}")
     return f'"{keyword}"'
+
+
+def _under_root(path: str | Path, root: str | Path) -> bool:
+    try:
+        child = os.path.normcase(os.path.abspath(str(path)))
+        parent = os.path.normcase(os.path.abspath(str(root)))
+        return os.path.commonpath([child, parent]) == parent
+    except (OSError, ValueError):
+        return False
 
 
 def search_keyword(
@@ -222,26 +272,27 @@ def search_keyword(
     max_results: int = 100000,
     match_path: bool = False,
     path_prefix: str | None = None,
+    instance: str | None = None,
+    exclude_roots: Iterable[str | Path] = (),
 ) -> list[Path]:
     ext_list = [e.lower().lstrip(".") for e in extensions if e.strip()]
     if not ext_list:
         raise ValueError("扩展名列表不能为空")
 
     query = f"{_safe_keyword(keyword)} ext:{';'.join(ext_list)}"
-    # /a-d asks Everything itself for files only. -path is applied by Everything
-    # before -n limiting, avoiding false omissions when scanning one drive/folder.
-    args = ["-timeout", "10000", "/a-d", "-full-path-and-name", "-n", str(max_results), "-s"]
+    args = _with_instance(
+        ["-timeout", "10000", "/a-d", "-full-path-and-name", "-n", str(max_results), "-s"],
+        instance,
+    )
     if match_path:
         args.append("-p")
     if path_prefix:
         args.extend(["-path", str(Path(path_prefix).expanduser())])
     args.append(query)
 
-    # Do not consume search result paths from ES console stdout. On Windows the
-    # console code page can replace legitimate Unicode filename characters with
-    # '?'. The UTF-8 export path preserves exact NTFS names such as NBSP/emoji.
     output = _run_export_txt(es_path, args, timeout=60, argv_mode=True)
     prefix = os.path.normcase(os.path.abspath(path_prefix)) if path_prefix else None
+    exclusions = [str(root) for root in exclude_roots if str(root).strip()]
     results: list[Path] = []
     for line in output.splitlines():
         raw = line.strip().strip('"')
@@ -256,8 +307,8 @@ def search_keyword(
                 continue
             if common != prefix:
                 continue
-        # Do not silently discard indexed files only because stat/is_file fails
-        # (for example permissions or temporarily unavailable removable media).
+        if any(_under_root(candidate, root) for root in exclusions):
+            continue
         results.append(candidate)
     return results
 
@@ -270,8 +321,10 @@ def scan_keywords(
     max_results_per_keyword: int = 100000,
     match_path: bool = False,
     path_prefix: str | None = None,
+    instance: str | None = None,
+    exclude_roots: Iterable[str | Path] = (),
 ) -> list[dict]:
-    status = get_status(es)
+    status = get_status(es, instance=instance)
     es_path = Path(status.es_path)
     found: dict[str, dict] = {}
     level_rank = {"high": 3, "sensitive": 2, "review": 1}
@@ -285,6 +338,8 @@ def scan_keywords(
                 max_results=max_results_per_keyword,
                 match_path=match_path,
                 path_prefix=path_prefix,
+                instance=instance,
+                exclude_roots=exclude_roots,
             ):
                 key = os.path.normcase(os.path.abspath(str(path)))
                 item = found.setdefault(
@@ -306,9 +361,9 @@ def scan_keywords(
             item["levels"], key=lambda name: level_rank.get(name, 0), default="review"
         )
         try:
-            stat = Path(item["path"]).stat()
-            item["size"] = stat.st_size
-            item["mtime_ns"] = stat.st_mtime_ns
+            stat_result = Path(item["path"]).stat()
+            item["size"] = stat_result.st_size
+            item["mtime_ns"] = stat_result.st_mtime_ns
             item["accessible"] = True
         except OSError:
             item["size"] = None

@@ -8,14 +8,14 @@ import filecheck.resumable as resumable
 from filecheck.backup import BackupError, read_backup_manifest, verify_backup
 
 
-def _use_test_appdata(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "appdata"))
+def _use_test_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("FILECHECK_HOME", str(tmp_path / "filecheck-home"))
 
 
 def test_copy_failure_keeps_state_and_resumes_without_recopying_valid_payloads(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _use_test_appdata(tmp_path, monkeypatch)
+    _use_test_home(tmp_path, monkeypatch)
     source_dir = tmp_path / "source"
     source_dir.mkdir()
     a = source_dir / "a.txt"
@@ -65,7 +65,7 @@ def test_copy_failure_keeps_state_and_resumes_without_recopying_valid_payloads(
 def test_storage_layout_mirrors_source_tree_for_manual_inspection(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _use_test_appdata(tmp_path, monkeypatch)
+    _use_test_home(tmp_path, monkeypatch)
     source = tmp_path / "项目A" / "参考资料" / "子目录" / "报告版本 V2.4.pdf"
     source.parent.mkdir(parents=True)
     source.write_bytes(b"payload")
@@ -90,7 +90,7 @@ def test_storage_layout_mirrors_source_tree_for_manual_inspection(
 def test_migrate_operation_stops_at_backup_verified_before_source_removal(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _use_test_appdata(tmp_path, monkeypatch)
+    _use_test_home(tmp_path, monkeypatch)
     source = tmp_path / "source.txt"
     source.write_text("payload", encoding="utf-8")
 
@@ -110,7 +110,7 @@ def test_migrate_operation_stops_at_backup_verified_before_source_removal(
 def test_discover_operation_states_lists_only_unfinished_by_default(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _use_test_appdata(tmp_path, monkeypatch)
+    _use_test_home(tmp_path, monkeypatch)
     source = tmp_path / "source.txt"
     source.write_text("payload", encoding="utf-8")
 

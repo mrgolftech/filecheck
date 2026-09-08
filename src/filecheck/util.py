@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import re
+import sys
 import uuid
 from datetime import datetime
 from pathlib import Path, PureWindowsPath
@@ -25,16 +26,43 @@ def make_batch_id() -> str:
 def sha256_file(path: Path, chunk_size: int = _IO_CHUNK_SIZE) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as fh:
-        while chunk := fh.read(chunk_size):
+        while True:
+            chunk = fh.read(chunk_size)
+            if not chunk:
+                return digest.hexdigest()
             digest.update(chunk)
-    return digest.hexdigest()
+
+
+def program_dir() -> Path:
+    """Return the portable FileCheck home directory.
+
+    Frozen releases keep runtime data next to FileCheck.exe. Source/development
+    runs use FILECHECK_HOME when set, otherwise the current working directory.
+    This makes the command-line workflow portable and keeps scan/index state in
+    one visible location instead of scattering it through AppData.
+    """
+    override = os.environ.get("FILECHECK_HOME")
+    if override:
+        return Path(override).expanduser().resolve()
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path.cwd().resolve()
+
+
+def runtime_dir() -> Path:
+    return program_dir() / "runtime"
+
+
+def scan_results_dir() -> Path:
+    return program_dir() / "scan-results"
 
 
 def app_data_dir() -> Path:
-    base = os.environ.get("LOCALAPPDATA")
-    if base:
-        return Path(base) / "FileCheck"
-    return Path.home() / ".filecheck"
+    """Backward-compatible alias for v0.1 operation-state callers.
+
+    v0.1.1 intentionally keeps state under the portable application directory.
+    """
+    return runtime_dir()
 
 
 def _fsync_parent(path: Path) -> None:
@@ -72,6 +100,26 @@ def write_json(path: Path, data: Any) -> None:
             pass
 
 
+def write_text(path: Path, text: str) -> None:
+    """Atomically write a UTF-8 text report."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    try:
+        with tmp.open("w", encoding="utf-8-sig", newline="\r\n") as fh:
+            fh.write(text)
+            if text and not text.endswith("\n"):
+                fh.write("\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+        _fsync_parent(path)
+    finally:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
 def read_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
 
@@ -88,7 +136,8 @@ def backup_relpath(source: Path) -> Path:
       C:\\Work\\a.docx -> files/C/Work/a.docx
       \\\\server\\share\\a -> files/UNC/server/share/a
 
-    A POSIX mapping is also supported to keep unit tests portable.
+    Different absolute source paths remain different backup paths even when the
+    final file names are identical.
     """
     raw = str(source)
     win = PureWindowsPath(raw)

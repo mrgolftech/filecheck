@@ -1,224 +1,174 @@
-# FileCheck V0.1 技术架构
+# FileCheck V0.1.1 技术架构
 
-## 1. 当前实现架构
-
-```text
-CLI (cli.py)
-  |
-  |-- doctor / scan
-  |       `--> EverythingAdapter (everything.py)
-  |               `--> es.exe -argv --> Everything 1.4 IPC
-  |
-  |-- backup / verify / restore
-  |       `--> BackupEngine (backup.py)
-  |               |-- directory backup
-  |               |-- ZIP backup
-  |               |-- manifest validation
-  |               |-- SHA-256 verification
-  |               `-- atomic restore
-  |
-  |-- migrate / migrate-resume
-  |       `--> MigrationEngine (migration.py)
-  |               |-- backup verification gate
-  |               |-- source recheck gate
-  |               |-- manifest-only source removal
-  |               `-- resumable migration state
-  |
-  `-- selftest
-          `--> isolated temporary backup/migrate/restore loop
-```
-
-核心原则：
-
-1. Everything 只负责快速产生候选路径；
-2. 扫描、备份、迁移、恢复职责分离；
-3. `backup` 永不删除源文件；
-4. `migrate` 必须经过完整性门禁后才能移除 manifest 中的源文件；
-5. manifest 是恢复权威数据，migration state 是源文件移除过程状态，两者分离。
-
-## 2. Everything 1.4 集成
-
-### 2.1 版本与 IPC
-
-V0.1 要求：
-
-- Everything 1.4.x；
-- ES CLI >= 1.1.0.37。
-
-ES 1.1.0.37 的 `-argv` 必须作为第一个 ES 参数，以避免 Python/PowerShell 传递包含空格、引号等查询参数时被旧自定义解析器错误拆分。
-
-Python 使用：
+## 1. 总体架构
 
 ```text
-subprocess.run([...], shell=False)
+launcher.py
+  └─ menu.py / cli.py
+       |
+       |-- doctor / index
+       |     └─ portable_everything.py
+       |           ├─ tools\Everything.exe
+       |           ├─ tools\es.exe
+       |           ├─ dedicated instance: FileCheck
+       |           └─ runtime\everything\*
+       |
+       |-- scan
+       |     └─ everything.py
+       |           └─ es.exe -argv -> FileCheck Everything IPC
+       |
+       |-- backup / verify / restore
+       |     └─ backup.py
+       |           ├─ mirrored directory backup
+       |           ├─ manifest validation
+       |           ├─ SHA-256 verification
+       |           └─ atomic restore
+       |
+       |-- resumable backup
+       |     └─ resumable.py
+       |           ├─ operation journal
+       |           ├─ per-file copy state
+       |           └─ resume + final verify
+       |
+       |-- remove-sources / remove-resume
+       |     └─ migration.py
+       |           ├─ full backup verification gate
+       |           ├─ whole-source preflight
+       |           ├─ per-file immediate recheck
+       |           ├─ manifest-only unlink
+       |           ├─ source-removal.json
+       |           └─ not-deleted.txt
+       |
+       └─ selftest
+             └─ temporary directory backup/delete/restore loop
 ```
 
-禁止拼接 shell 命令字符串。
+`migrate` / `migrate-resume` 作为高级兼容别名保留，但推荐交互流程把“备份”和“删除”拆成独立阶段。
 
-### 2.2 查询结构
+## 2. 运行目录
 
-对每一个关键词生成一次查询：
+正式便携包：
 
 ```text
-"<keyword>" ext:doc;docx;xls;xlsx;ppt;pptx;pdf;txt;wps;zip;rar;7z;dwg
+FileCheck\
+├─ FileCheck.exe
+├─ config\rules.json
+├─ tools\Everything.exe
+├─ tools\es.exe
+├─ runtime\
+│  ├─ everything\
+│  │  ├─ Everything.ini
+│  │  ├─ Everything.db
+│  │  └─ index-config.json
+│  └─ operations\*.operation.json
+└─ scan-results\*.json / *.csv
 ```
 
-常用 ES 选项：
+`program_dir()` 作为便携根目录。冻结 EXE 时是 `FileCheck.exe` 所在目录；开发环境可通过 `FILECHECK_HOME` 指定隔离运行目录。
+
+## 3. Portable Everything
+
+### 3.1 专用实例
+
+FileCheck 不复用用户默认 Everything 服务，而是启动：
 
 ```text
--argv
--timeout 10000
-/a-d
--full-path-and-name
--n <limit>
--s
--path <scan-root>
--p                  # 仅 --match-path 时
+Everything.exe -instance FileCheck ...
 ```
 
-`-path` 必须在 Everything 侧生效，再由 FileCheck 对返回路径做一次范围防御校验。
+ES 查询同一实例。
 
-## 3. 扫描聚合模型
+这样可以让 FileCheck 自己控制：
 
-Everything 每个关键词独立查询，FileCheck 按规范化绝对路径聚合：
+- 索引范围；
+- 排除目录；
+- Everything.ini；
+- Everything.db；
+- 生命周期。
+
+同时不修改用户已有 Everything 配置。
+
+### 3.2 索引配置
+
+`portable_everything.py` 负责：
 
 ```text
-normalized absolute path
-        ↓
-{
-  path,
-  directory,
-  matched_keywords[],
-  levels[],
-  severity,
-  size,
-  mtime_ns,
-  accessible
-}
+选择 roots
+→ 规范化路径
+→ 保存 backup_root
+→ 自动加入 program_dir 排除
+→ 自动加入 backup_root 排除
+→ 写 Everything.ini
+→ 启动/重启 FileCheck instance
+→ 等待 ES IPC 可用
+→ 保存 index-config.json
 ```
 
-同一文件命中多个词时：
+## 4. 扫描架构
 
-- 结果只保留一条；
-- `matched_keywords` 合并；
-- `levels` 合并；
-- `severity` 取最高级别。
-
-扫描阶段不对所有候选读取正文，也不计算内容 SHA-256，避免破坏 Everything 快速检索优势。
-
-## 4. `scan-results.json`
-
-用途：发现清单/后续批处理输入，不作为恢复依据。
-
-顶层：
+Everything 只负责**发现候选路径**，不负责文件性质判定。
 
 ```text
-schema_version
-created_at
-engine
-everything_version
-match_path
-path_filter
-rules.file
-rules.sha256
-items[]
+rules.json
+→ keywords × extensions
+→ ES -argv / UTF-8 export
+→ path candidates
+→ normalize absolute path
+→ deduplicate
+→ merge matched keywords
+→ severity max
+→ scan-results.json / CSV
 ```
 
-规则只记录文件名和 SHA-256，不记录规则绝对路径。
+默认关键词只匹配文件名；`--match-path` 才包含完整路径。
 
-候选很多时控制台只显示前 N 条；JSON 保存全部候选。`backup/migrate --from-scan` 默认处理全部 `items`，无需逐文件确认。
+扫描 JSON 是候选发现记录，不是恢复权威数据。
 
-## 5. 备份路径映射
+## 5. 目录备份架构
 
-Windows 绝对路径映射为备份内部相对路径：
+V0.1.1 的唯一备份格式是目录：
 
 ```text
-C:\Work\ProjectA\报告.docx
-=> files/C/Work/ProjectA/报告.docx
-
-D:\资料\报告.docx
-=> files/D/资料/报告.docx
+FC-...\
+├─ manifest.json
+└─ files\
+   ├─ C\...
+   ├─ D\...
+   └─ ...
 ```
 
-因此不同目录下同名文件不会互相覆盖。
-
-UNC 使用 `files/UNC/...` 映射。路径分量经过安全化；若不同源路径映射到相同 `backup_path`，manifest 校验必须拒绝整个批次。
-
-## 6. 备份事务
-
-### 6.1 空间预检
+路径映射示例：
 
 ```text
-collect files
-→ sum(source.size)
-→ directory: total + reserve
-→ zip: 2 * total + reserve
-→ disk_usage(destination)
-→ 不足则在 staging 创建前拒绝
+D:\Work\A\报告.pdf
+→ files\D\Work\A\报告.pdf
 ```
 
-ZIP 之所以按约 2 倍估算，是因为生成阶段同时存在完整 staging 与临时 ZIP。
+同名文件不会冲突，因为 `backup_path` 来源于完整源路径结构。
 
-### 6.2 单文件复制
+### 5.1 创建事务
 
 ```text
-source.stat(before)
-→ source SHA-256
-→ shutil.copy2(source, .part)
-→ writable-handle fsync(.part)
-→ copied SHA-256
-→ source.stat/hash(after)
-→ 检测源文件是否变化
-→ os.replace(.part, backup target)
-→ fsync(target)
+collect/deduplicate sources
+→ destination space preflight
+→ create .FC-....incomplete
+→ for each source:
+     stat(before)
+     → copy source once to temp while calculating SHA-256
+     → fsync temp
+     → stat(after)
+     → reject source mutation
+     → os.replace(temp, backup target)
+→ write manifest.json
+→ verify every payload size + SHA-256
+→ os.replace(staging, final FC-* directory)
 ```
 
-Windows 对只读文件描述符执行 `os.fsync` 会失败，因此 `_sync_file` 使用可写句柄；若 `copy2` 已复制源只读属性，则临时增加 owner-write，刷盘后恢复原模式。
+未完成或未通过 verify 的 staging 不发布为正式备份。
 
-### 6.3 批次发布
+### 5.2 manifest
 
-目录：
-
-```text
-.FC-<id>.incomplete/
-→ files...
-→ manifest.json atomic write + fsync
-→ verify staging
-→ os.replace(staging, FC-<id>)
-→ verify final
-```
-
-ZIP：
-
-```text
-.FC-<id>.incomplete/
-→ verify staging
-→ .FC-<id>.<uuid>.tmp.zip
-→ CRC + manifest + per-entry SHA-256 verify
-→ fsync
-→ os.replace(..., FC-<id>.zip)
-→ final verify
-```
-
-任一步失败，清理 incomplete/final partial artifact，不能把失败批次暴露为正式成功备份。
-
-## 7. Manifest
-
-manifest schema v1：
-
-```text
-schema_version
-batch_id
-created_at
-mode
-source_removed=false          # 创建备份时的状态，不作为迁移进度权威值
-source_bytes_total
-space_required_estimate
-space_free_at_start
-items[]
-```
-
-每个 item：
+manifest 是恢复的权威映射，记录：
 
 ```text
 source_path
@@ -226,179 +176,150 @@ backup_path
 size
 mtime_ns
 sha256
-backup_verified
-source_removed=false
 ```
 
-迁移不修改已发布 manifest；源文件移除状态由独立 migration state 记录，避免为了更新状态重新打包 ZIP 或改变已经验证的备份内容。
+它表示“备份创建时发生了什么”，不表示后续源文件是否被删除，因此 V0.1.1 不再包含 `source_removed`。
 
-## 8. Verify
+## 6. 可续传备份
 
-目录备份：
+`resumable.py` 使用独立 operation journal：
 
 ```text
-manifest schema/path validation
-→ 每个 backup_path 必须位于 files/
-→ source_path 必须为绝对路径
-→ source/backup 路径不得重复
-→ size 验证
-→ SHA-256 验证
+runtime\operations\<batch>.operation.json
 ```
 
-ZIP：
+每个 item 记录复制状态。已标记 `copied` 的 staging payload 在 resume 时会重新验证；仍有效则跳过复制，否则回到 `pending`。
+
+只有全部 item 成功并通过最终 verify 才发布正式批次。
+
+## 7. 源文件删除架构
+
+删除状态与 manifest 分离：
 
 ```text
-zipfile.testzip() CRC
-→ manifest validation
-→ member existence
-→ member size
-→ stream SHA-256
+FC-...\
+├─ manifest.json
+├─ source-removal.json
+├─ not-deleted.txt       # 仅失败时存在
+└─ files\...
 ```
 
-恢复和迁移都以 `verify_backup()` 作为前置门禁。
-
-## 9. 恢复事务
+### 7.1 第一阶段：整批门禁
 
 ```text
 verify entire backup
-→ Windows 原始驱动器/共享 preflight
-→ 对每个 item：
-     skip / rename / overwrite conflict resolution
-     → 同目录 .filecheck-restore-*.part
-     → copy/decompress
+→ for every manifest source:
+     reject symlink/reparse entry
+     require existing regular file
+     check size
+     hash SHA-256
+     check stat stable before/after hash
+→ any failure => delete nothing
+```
+
+### 7.2 第二阶段：逐文件删除
+
+整批门禁通过且用户确认后：
+
+```text
+write initial source-removal.json
+→ each item:
+     immediate source recheck
+     → unlink source_path only
+     → checkpoint immediately
+     → failure => mark failed and continue
+```
+
+不会递归删除父目录，也不会删除 manifest 以外的文件。
+
+### 7.3 Resume
+
+resume 前再次 verify 整个备份，然后：
+
+- 只重试 `pending/failed`；
+- 已经消失的失败项可记为 `already_absent`；
+- `deleted/already_absent` 路径重新出现时标记 `reappeared`；
+- `reappeared` 不自动删除。
+
+这是为了避免把后来创建的新文件误认为原始待删除文件。
+
+## 8. 恢复架构
+
+恢复流程：
+
+```text
+read + validate manifest
+→ verify entire backup first
+→ preflight original Windows drive/share anchors
+→ each item:
+     choose conflict strategy
+     → copy backup payload to target-directory temp
      → fsync
-     → size + SHA-256
+     → verify temp size + SHA-256
      → best-effort mtime
-     → os.replace(temp, target)
-     → final SHA-256
+     → os.replace
+     → fsync target
+     → final size + SHA-256
 ```
 
-关键不变量：`overwrite` 在临时恢复副本通过 SHA-256 之前不能修改已有目标。
+`overwrite` 不会先破坏现有目标；只有临时恢复文件通过校验才替换。
 
-## 10. 批量迁移事务
+## 9. 旧 ZIP 兼容边界
 
-### 10.1 阶段一：不可破坏阶段
+V0.1.1 不含 ZIP 读取/解压/创建逻辑。
+
+但 `backup.py` 接受**目录输入中的旧 manifest `mode=zip`**：
 
 ```text
-scan result / explicit sources
-→ create_backup
-→ verify_backup
-→ preflight_migration
-     → 全部 source_path 存在且为普通文件
-     → size 一致
-     → SHA-256 一致
-     → hash 前后 stat 一致
+V0.1.0 ZIP
+→ 用户人工完整解压
+→ manifest.json + files\
+→ V0.1.1 verify / restore
 ```
 
-任一源文件不一致，**整批停止，尚未删除任何源文件**。
+因此兼容的是“旧 ZIP 的解压目录”，不是 ZIP 文件本身。
 
-### 10.2 阶段二：用户授权
+## 10. 数据耐久性
 
-CLI 默认只要求一次批次确认：
+关键写入使用：
+
+- 同目录临时文件；
+- flush + `os.fsync`；
+- `os.replace`；
+- JSON 临时文件原子替换；
+- 删除状态逐文件 checkpoint。
+
+这些措施显著降低进程中断/异常造成的数据状态不一致，但不承诺在所有文件系统、掉电、介质故障情况下具有数据库式强原子性。
+
+## 11. 当前支持范围
+
+V0.1.1 主要保证普通文件：
 
 ```text
-files / bytes / backup path
-→ 输入 YES
+content bytes
+absolute source path
+mirrored backup path
+size
+SHA-256
+basic mtime
 ```
 
-`--yes` 仅用于用户明确选择的无人值守场景。
+不承诺完整恢复：ACL、EFS、ADS、hardlink、sparse、reparse、owner、audit 等高级 NTFS 元数据。
 
-### 10.3 阶段三：manifest-only removal
+## 12. GUI 后续接入
 
-删除前先写 migration sidecar。之后：
+CLI 先作为稳定业务内核。
+
+后续 GUI 应只包装现有生命周期能力：
 
 ```text
-for each manifest item:
-    再次即时检查 size + SHA-256 + stat stability
-    → unlink(source_path)
-    → checkpoint migration state
+index
+scan
+review
+backup
+verify
+remove/resume
+restore
 ```
 
-只允许删除 manifest 中逐项列出的文件，不允许对父目录 `rmtree`，不自动删除空目录。
-
-文件锁/权限错误不会触发杀进程或强制解锁；该项标记 `failed`，其他已完成项保留状态。
-
-## 11. Migration state 与断点恢复
-
-sidecar：
-
-```text
-FC-xxxx.migration.json
-FC-xxxx.zip.migration.json
-```
-
-item state：
-
-```text
-pending
-failed
-deleted
-already_absent
-reappeared
-```
-
-`migrate-resume`：
-
-```text
-read state
-→ verify complete backup again
-→ state ↔ manifest batch/files/size/SHA validation
-→ 对 pending/failed 重试
-→ 已记录 removed 的路径若重新出现：标记 reappeared，不自动删除
-→ checkpoint
-```
-
-这样避免应用在迁移后重新生成同名文件时，被续跑逻辑误删。
-
-## 12. 故障模型
-
-| 故障 | 策略 |
-|---|---|
-| 目标空间不足 | staging 前拒绝 |
-| 备份盘中途掉线 | 抛错，未完成批次不发布 |
-| 源文件备份中变化 | 整批备份失败 |
-| 目录/ZIP 被篡改 | verify 拒绝恢复/迁移 |
-| ZIP CRC 正常但内容被改 | SHA-256 拒绝 |
-| 恢复临时文件损坏 | 不替换现有目标 |
-| 源文件备份后被修改 | migrate preflight 整批拒绝删除 |
-| 源文件在真正删除前又变化 | 当前 item 不删除，记录 failed |
-| 文件被应用占用 | failed，关闭应用后 resume |
-| migration 中断 | sidecar checkpoint；resume 重验备份 |
-| 已删除路径后来重新出现 | `reappeared`，不自动删除 |
-
-## 13. 当前代码目录
-
-```text
-filecheck/
-├─ config/
-│  └─ rules.json
-├─ docs/
-│  ├─ REQUIREMENTS.md
-│  ├─ ARCHITECTURE.md
-│  └─ TEST_PLAN.md
-├─ src/filecheck/
-│  ├─ __init__.py
-│  ├─ backup.py
-│  ├─ cli.py
-│  ├─ everything.py
-│  ├─ migration.py
-│  ├─ selftest.py
-│  └─ util.py
-├─ tests/
-│  ├─ test_backup_restore.py
-│  ├─ test_cli_bulk.py
-│  ├─ test_everything.py
-│  ├─ test_migration.py
-│  ├─ test_resilience_hardening.py
-│  ├─ test_restore_safety.py
-│  └─ test_stress.py
-└─ .github/workflows/ci.yml
-```
-
-## 14. 当前边界
-
-- V0.1 快速扫描主要针对文件名/路径，不是 Office/PDF 正文深度扫描器；
-- 空目录不单独保存；
-- 不承诺 NTFS ACL、EFS、ADS、硬链接、稀疏文件、重解析点等高级语义；
-- ZIP 仅压缩不加密；
-- Everything 实机 IPC 无法由普通 CI 模拟，必须在目标 Windows 环境单独验收。
+GUI 不应重新实现备份、校验或删除算法，而应复用同一 Python core，从而保持 CLI/GUI 行为一致。

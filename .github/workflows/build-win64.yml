@@ -5,11 +5,12 @@ on:
   push:
     branches:
       - main
-      - feat/v0.1-everything-backup
+      - feat/v0.1.1-cli-workflow
     paths:
       - "src/**"
       - "config/**"
       - "packaging/**"
+      - "tests/**"
       - "pyproject.toml"
       - ".github/workflows/build-win64.yml"
 
@@ -18,6 +19,12 @@ jobs:
     runs-on: windows-latest
     permissions:
       contents: read
+
+    env:
+      ES_URL: https://github.com/voidtools/ES/releases/download/1.1.0.37/ES-1.1.0.37.x64.zip
+      ES_ZIP_SHA256: 7A57670D9152068D05876C58858C82FE6D3915A9DF2C819F4DE8801E2929D3A7
+      EVERYTHING_URL: https://www.voidtools.com/Everything-1.4.1.1032.x64.zip
+      EVERYTHING_ZIP_SHA256: 698DF475EC44E638F66F1B6A32D28FEA613CEC78D3B6310E6ABE53431EEB940C
 
     steps:
       - name: Checkout
@@ -34,11 +41,19 @@ jobs:
         run: |
           python -c "import platform,struct; print(platform.platform()); print(platform.machine()); print(struct.calcsize('P')*8); assert struct.calcsize('P')*8 == 64"
 
-      - name: Install build dependencies
+      - name: Install build and test dependencies
         shell: pwsh
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e ".[build]"
+          python -m pip install -e ".[build,dev]"
+
+      - name: Run regression tests
+        shell: pwsh
+        run: |
+          python -m pytest -q
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          filecheck selftest
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Build FileCheck.exe
         shell: pwsh
@@ -61,15 +76,38 @@ jobs:
           .\dist\FileCheck.exe --help | Out-Host
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Download and verify official ES 1.1.0.37 x64
+      - name: Download and verify official ES and Everything
         shell: pwsh
         run: |
-          $url = "https://github.com/voidtools/ES/releases/download/1.1.0.37/ES-1.1.0.37.x64.zip"
-          $expected = "7A57670D9152068D05876C58858C82FE6D3915A9DF2C819F4DE8801E2929D3A7"
-          Invoke-WebRequest -Uri $url -OutFile "ES-1.1.0.37.x64.zip"
-          $actual = (Get-FileHash "ES-1.1.0.37.x64.zip" -Algorithm SHA256).Hash
-          if ($actual -ne $expected) {
-            throw "ES archive SHA-256 mismatch. expected=$expected actual=$actual"
+          function Invoke-DownloadWithRetry {
+            param(
+              [Parameter(Mandatory=$true)][string]$Uri,
+              [Parameter(Mandatory=$true)][string]$OutFile,
+              [int]$Attempts = 4
+            )
+            for ($i = 1; $i -le $Attempts; $i++) {
+              try {
+                Remove-Item -LiteralPath $OutFile -Force -ErrorAction SilentlyContinue
+                Write-Host "Download attempt $i/$Attempts : $Uri"
+                Invoke-WebRequest -Uri $Uri -OutFile $OutFile -TimeoutSec 120
+                if (-not (Test-Path -LiteralPath $OutFile)) {
+                  throw "Download completed without output file: $OutFile"
+                }
+                return
+              }
+              catch {
+                if ($i -eq $Attempts) { throw }
+                $delay = 5 * $i
+                Write-Warning "Download failed: $($_.Exception.Message). Retry in $delay seconds."
+                Start-Sleep -Seconds $delay
+              }
+            }
+          }
+
+          Invoke-DownloadWithRetry -Uri "$env:ES_URL" -OutFile "ES-1.1.0.37.x64.zip"
+          $esActual = (Get-FileHash "ES-1.1.0.37.x64.zip" -Algorithm SHA256).Hash
+          if ($esActual -ne $env:ES_ZIP_SHA256) {
+            throw "ES archive SHA-256 mismatch. expected=$env:ES_ZIP_SHA256 actual=$esActual"
           }
           Expand-Archive "ES-1.1.0.37.x64.zip" -DestinationPath "es-dist" -Force
           $es = Get-ChildItem "es-dist" -Recurse -File -Filter "es.exe" | Select-Object -First 1
@@ -77,10 +115,20 @@ jobs:
           & $es.FullName -version | Out-Host
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+          Invoke-DownloadWithRetry -Uri "$env:EVERYTHING_URL" -OutFile "Everything-1.4.1.1032.x64.zip"
+          $everythingActual = (Get-FileHash "Everything-1.4.1.1032.x64.zip" -Algorithm SHA256).Hash
+          if ($everythingActual -ne $env:EVERYTHING_ZIP_SHA256) {
+            throw "Everything archive SHA-256 mismatch. expected=$env:EVERYTHING_ZIP_SHA256 actual=$everythingActual"
+          }
+          Expand-Archive "Everything-1.4.1.1032.x64.zip" -DestinationPath "everything-dist" -Force
+          $everything = Get-ChildItem "everything-dist" -Recurse -File -Filter "Everything.exe" | Select-Object -First 1
+          if (-not $everything) { throw "Everything.exe not found in official portable archive" }
+          Get-Item $everything.FullName | Format-List Name,Length,LastWriteTime
+
       - name: Assemble portable package
         shell: pwsh
         run: |
-          $pkg = "package\FileCheck-win64"
+          $pkg = "package\FileCheck-win10plus-x64"
           New-Item -ItemType Directory -Force "$pkg\config" | Out-Null
           New-Item -ItemType Directory -Force "$pkg\tools" | Out-Null
 
@@ -90,36 +138,47 @@ jobs:
           Copy-Item "packaging\THIRD-PARTY-NOTICES.txt" "$pkg\THIRD-PARTY-NOTICES.txt"
 
           $es = Get-ChildItem "es-dist" -Recurse -File -Filter "es.exe" | Select-Object -First 1
+          $everything = Get-ChildItem "everything-dist" -Recurse -File -Filter "Everything.exe" | Select-Object -First 1
           Copy-Item $es.FullName "$pkg\tools\es.exe"
+          Copy-Item $everything.FullName "$pkg\tools\Everything.exe"
 
           @"
-          Bundled component:
+          Bundled components:
+            Everything 1.4.1.1032 x64 portable
+            tools\Everything.exe
+
             Everything Command-line Interface (ES) 1.1.0.37 x64
             tools\es.exe
 
-          Everything 1.4.x itself must still be installed/running on the target Windows machine.
-          ES license/source information is in ..\THIRD-PARTY-NOTICES.txt.
+          FileCheck starts a dedicated Everything instance named FileCheck and stores
+          its Everything.ini / Everything.db under runtime\everything. A separately
+          installed/default Everything instance is not required for v0.1.1.
           "@ | Set-Content -Encoding UTF8 "$pkg\tools\README.txt"
 
           $filecheckHash = (Get-FileHash "$pkg\FileCheck.exe" -Algorithm SHA256).Hash
+          $everythingHash = (Get-FileHash "$pkg\tools\Everything.exe" -Algorithm SHA256).Hash
           $esHash = (Get-FileHash "$pkg\tools\es.exe" -Algorithm SHA256).Hash
           @(
             "FileCheck.exe  $filecheckHash",
+            "tools\Everything.exe  $everythingHash",
             "tools\es.exe  $esHash"
           ) | Set-Content -Encoding ASCII "$pkg\SHA256SUMS.txt"
 
-          Compress-Archive -Path "$pkg\*" -DestinationPath "package\FileCheck-v0.1.0-win64.zip" -Force
+          Compress-Archive -Path "$pkg\*" -DestinationPath "package\FileCheck-v0.1.1-win10plus-x64.zip" -Force
 
           Get-Item "$pkg\FileCheck.exe" | Format-List Name,Length,LastWriteTime
+          Get-Item "$pkg\tools\Everything.exe" | Format-List Name,Length,LastWriteTime
           Get-Item "$pkg\tools\es.exe" | Format-List Name,Length,LastWriteTime
           Get-Content "$pkg\SHA256SUMS.txt"
 
-      - name: Verify packaged ES location
+      - name: Validate packaged portable discovery
         shell: pwsh
         run: |
           Push-Location "$env:TEMP"
           try {
-            & "$env:GITHUB_WORKSPACE\package\FileCheck-win64\tools\es.exe" -version | Out-Host
+            & "$env:GITHUB_WORKSPACE\package\FileCheck-win10plus-x64\tools\es.exe" -version | Out-Host
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            & "$env:GITHUB_WORKSPACE\package\FileCheck-win10plus-x64\FileCheck.exe" doctor | Out-Host
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
           finally {
@@ -129,7 +188,7 @@ jobs:
       - name: Upload Win64 artifact
         uses: actions/upload-artifact@v4
         with:
-          name: FileCheck-v0.1.0-win64
-          path: package/FileCheck-v0.1.0-win64.zip
+          name: FileCheck-v0.1.1-win10plus-x64
+          path: package/FileCheck-v0.1.1-win10plus-x64.zip
           if-no-files-found: error
           retention-days: 30

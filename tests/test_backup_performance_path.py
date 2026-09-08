@@ -7,7 +7,7 @@ import pytest
 
 import filecheck.backup as backup_mod
 import filecheck.cli as cli_mod
-from filecheck.backup import create_backup, read_backup_manifest, verify_backup
+from filecheck.backup import create_backup, read_backup_manifest
 from filecheck.util import sha256_file
 
 
@@ -34,11 +34,9 @@ def test_atomic_backup_reads_source_payload_once(tmp_path: Path, monkeypatch: py
     assert sha256_file(target) == digest
 
 
-@pytest.mark.parametrize("zip_mode", [False, True])
 def test_create_backup_performs_one_full_verify_before_publish(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    zip_mode: bool,
 ) -> None:
     source = tmp_path / "source"
     source.mkdir()
@@ -53,13 +51,13 @@ def test_create_backup_performs_one_full_verify_before_publish(
         return real_verify(path, progress=progress)
 
     monkeypatch.setattr(backup_mod, "verify_backup", counting_verify)
-    result = create_backup([source], tmp_path / "backup", zip_mode=zip_mode)
+    result = create_backup([source], tmp_path / "backup")
 
     assert len(verify_calls) == 1
     manifest = read_backup_manifest(result)
+    assert manifest["mode"] == "directory"
     assert manifest["copy_strategy"] == "single-pass-sha256-v1"
     assert len(manifest["items"]) == 5
-    # A later explicit verify remains fully available and independent.
     real_verify(result)
 
 

@@ -5,21 +5,32 @@ from pathlib import Path
 from typing import Iterable
 
 from .backup import BackupError, ProgressCallback, verify_backup
-from .util import now_iso, read_json, sha256_file, write_json
+from .util import now_iso, read_json, sha256_file, write_json, write_text
 
 
 class MigrationError(BackupError):
     pass
 
 
-_STATE_SCHEMA_VERSION = 1
-_DEFAULT_CHECKPOINT_EVERY = 50
+_STATE_SCHEMA_VERSION = 2
+_DEFAULT_CHECKPOINT_EVERY = 1
 _ALLOWED_ITEM_STATES = {"pending", "deleted", "already_absent", "failed", "reappeared"}
+_STATE_NAME = "source-removal.json"
+_FAILED_REPORT_NAME = "not-deleted.txt"
 
 
 def migration_state_path(backup: str | Path) -> Path:
     backup_path = Path(backup).expanduser().resolve()
-    return backup_path.parent / f"{backup_path.name}.migration.json"
+    if not backup_path.is_dir():
+        raise MigrationError("v0.1.1 只支持目录备份的源文件删除")
+    return backup_path / _STATE_NAME
+
+
+def failed_report_path(backup: str | Path) -> Path:
+    backup_path = Path(backup).expanduser().resolve()
+    if not backup_path.is_dir():
+        raise MigrationError("v0.1.1 只支持目录备份")
+    return backup_path / _FAILED_REPORT_NAME
 
 
 def _notify(progress: ProgressCallback | None, stage: str, current: int, total: int, path: str | Path) -> None:
@@ -28,7 +39,6 @@ def _notify(progress: ProgressCallback | None, stage: str, current: int, total: 
 
 
 def _entry_exists(path: Path) -> bool:
-    """Return True for regular entries and also for broken symlinks."""
     try:
         return path.exists() or path.is_symlink()
     except OSError:
@@ -44,11 +54,9 @@ def _check_source_item(item: dict) -> tuple[bool, str | None]:
             return False, "源文件不存在"
         if not source.is_file():
             return False, "源路径已不是普通文件"
-
         before = source.stat()
         if before.st_size != item["size"]:
             return False, "文件大小已变化"
-
         digest = sha256_file(source)
         after = source.stat()
         if (
@@ -76,7 +84,6 @@ def _preflight_items(items: Iterable[dict], *, progress: ProgressCallback | None
             if len(problems) < 10:
                 problems.append((str(item["source_path"]), reason or "未知原因"))
         _notify(progress, "recheck", index, total, item["source_path"])
-
     if problem_count:
         detail = "；".join(f"{path}: {reason}" for path, reason in problems)
         if problem_count > len(problems):
@@ -87,12 +94,7 @@ def _preflight_items(items: Iterable[dict], *, progress: ProgressCallback | None
         )
 
 
-def preflight_migration(
-    backup: str | Path,
-    *,
-    progress: ProgressCallback | None = None,
-) -> dict:
-    """Verify backup and re-hash every source before any destructive action."""
+def preflight_migration(backup: str | Path, *, progress: ProgressCallback | None = None) -> dict:
     backup_path = Path(backup).expanduser().resolve()
     manifest = verify_backup(backup_path)
     _preflight_items(manifest["items"], progress=progress)
@@ -108,6 +110,7 @@ def _new_state(backup: Path, manifest: dict) -> dict:
     created = now_iso()
     return {
         "schema_version": _STATE_SCHEMA_VERSION,
+        "kind": "filecheck-source-removal",
         "batch_id": manifest.get("batch_id"),
         "backup_path": str(backup),
         "created_at": created,
@@ -139,40 +142,38 @@ def _manifest_by_source(manifest: dict) -> dict[str, dict]:
 
 def _validate_state(state: dict, manifest: dict, backup: Path) -> dict[str, dict]:
     if state.get("schema_version") != _STATE_SCHEMA_VERSION:
-        raise MigrationError("不支持的 migration state schema_version")
+        raise MigrationError("不支持的 source-removal state schema_version")
+    if state.get("kind") != "filecheck-source-removal":
+        raise MigrationError("不是 FileCheck 源文件删除状态")
     if state.get("batch_id") != manifest.get("batch_id"):
-        raise MigrationError("migration state 的 batch_id 与备份不一致")
-
+        raise MigrationError("source-removal state 的 batch_id 与备份不一致")
     try:
         state_backup = Path(str(state["backup_path"])).expanduser().resolve()
     except (KeyError, OSError, RuntimeError) as exc:
-        raise MigrationError("migration state 缺少有效 backup_path") from exc
+        raise MigrationError("source-removal state 缺少有效 backup_path") from exc
     if os.path.normcase(str(state_backup)) != os.path.normcase(str(backup)):
-        raise MigrationError("migration state 指向的备份与当前备份不一致")
-
+        raise MigrationError("source-removal state 指向的备份与当前备份不一致")
     rows = state.get("items")
     if not isinstance(rows, list):
-        raise MigrationError("migration state 缺少有效 items")
-
+        raise MigrationError("source-removal state 缺少有效 items")
     manifest_map = _manifest_by_source(manifest)
     seen: set[str] = set()
     for row in rows:
         if not isinstance(row, dict) or "source_path" not in row:
-            raise MigrationError("migration state item 格式无效")
+            raise MigrationError("source-removal item 格式无效")
         key = os.path.normcase(os.path.abspath(str(row["source_path"])))
         item = manifest_map.get(key)
         if item is None:
-            raise MigrationError(f"migration state 包含不属于备份的源路径: {row['source_path']}")
+            raise MigrationError(f"source-removal 包含不属于备份的源路径: {row['source_path']}")
         if key in seen:
-            raise MigrationError(f"migration state 源路径重复: {row['source_path']}")
+            raise MigrationError(f"source-removal 源路径重复: {row['source_path']}")
         seen.add(key)
         if row.get("state") not in _ALLOWED_ITEM_STATES:
-            raise MigrationError(f"migration state 包含未知状态: {row.get('state')}")
+            raise MigrationError(f"source-removal 包含未知状态: {row.get('state')}")
         if row.get("size") != item["size"] or str(row.get("sha256", "")).lower() != str(item["sha256"]).lower():
-            raise MigrationError(f"migration state 文件摘要与 manifest 不一致: {row['source_path']}")
-
+            raise MigrationError(f"source-removal 文件摘要与 manifest 不一致: {row['source_path']}")
     if seen != set(manifest_map):
-        raise MigrationError("migration state 与 manifest 文件集合不一致")
+        raise MigrationError("source-removal 与 manifest 文件集合不一致")
     return manifest_map
 
 
@@ -191,9 +192,34 @@ def _recount(state: dict) -> None:
     state["updated_at"] = now_iso()
 
 
+def _write_failed_report(backup: Path, state: dict) -> None:
+    report = failed_report_path(backup)
+    failed_rows = [row for row in state["items"] if row.get("state") in ("failed", "reappeared")]
+    if not failed_rows:
+        try:
+            report.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return
+    lines = [
+        "FileCheck 未删除源文件清单",
+        f"批次: {state.get('batch_id', '-')}",
+        f"生成时间: {state.get('updated_at', '-')}",
+        f"未删除数量: {len(failed_rows)}",
+        "",
+    ]
+    for index, row in enumerate(failed_rows, start=1):
+        lines.append(f"{index}. {row['source_path']}")
+        lines.append(f"   状态: {row.get('state')}")
+        lines.append(f"   原因: {row.get('error') or '未知原因'}")
+        lines.append("")
+    write_text(report, "\n".join(lines))
+
+
 def _checkpoint(path: Path, state: dict) -> None:
     _recount(state)
     write_json(path, state)
+    _write_failed_report(Path(str(state["backup_path"])), state)
 
 
 def _remove_one(row: dict, manifest_item: dict) -> None:
@@ -213,17 +239,11 @@ def _remove_one(row: dict, manifest_item: dict) -> None:
     row["error"] = None
 
 
-def _reject_unsafe_state_location(state_file: Path, backup: Path, manifest_map: dict[str, dict]) -> None:
-    state_key = os.path.normcase(os.path.abspath(str(state_file)))
-    if state_key in manifest_map:
-        raise MigrationError("迁移状态文件不能覆盖 manifest 中的源文件")
-    if backup.is_dir():
-        try:
-            state_file.relative_to(backup)
-        except ValueError:
-            pass
-        else:
-            raise MigrationError("迁移状态文件不能写入备份批次目录内部")
+def _resolve_state_path(state_path: str | Path) -> Path:
+    candidate = Path(state_path).expanduser().resolve()
+    if candidate.is_dir():
+        candidate = candidate / _STATE_NAME
+    return candidate
 
 
 def remove_verified_sources(
@@ -234,25 +254,17 @@ def remove_verified_sources(
     preflight: bool = True,
     checkpoint_every: int = _DEFAULT_CHECKPOINT_EVERY,
 ) -> tuple[Path, dict]:
-    """Remove only source files listed by a fully verified backup manifest.
-
-    The entire source set is rechecked before the first delete. Each individual
-    file is checked again immediately before unlinking. Empty directories are
-    deliberately left untouched. A sidecar state file is checkpointed so a
-    partial run can be resumed safely after locks, permissions, or interruption.
-    """
+    """Remove only manifest-listed files, skipping failures and journaling each step."""
     backup_path = Path(backup).expanduser().resolve()
     manifest = verify_backup(backup_path)
     if preflight:
         _preflight_items(manifest["items"], progress=progress)
-
-    state_file = Path(state_path).expanduser().resolve() if state_path else migration_state_path(backup_path)
-    manifest_map = _manifest_by_source(manifest)
-    _reject_unsafe_state_location(state_file, backup_path, manifest_map)
+    state_file = _resolve_state_path(state_path) if state_path else migration_state_path(backup_path)
+    if state_file.parent != backup_path:
+        raise MigrationError("source-removal.json 必须保存在对应备份批次目录中")
     if state_file.exists():
-        raise MigrationError(f"迁移状态文件已存在，请使用 migrate-resume: {state_file}")
-    state_file.parent.mkdir(parents=True, exist_ok=True)
-
+        raise MigrationError(f"源文件删除状态已存在，请使用继续删除功能: {state_file}")
+    manifest_map = _manifest_by_source(manifest)
     state = _new_state(backup_path, manifest)
     _checkpoint(state_file, state)
 
@@ -262,9 +274,8 @@ def remove_verified_sources(
         key = os.path.normcase(os.path.abspath(str(row["source_path"])))
         _remove_one(row, manifest_map[key])
         _notify(progress, "remove", index, total, row["source_path"])
-        if row["state"] == "failed" or index % every == 0 or index == total:
+        if index % every == 0 or row["state"] == "failed" or index == total:
             _checkpoint(state_file, state)
-
     _checkpoint(state_file, state)
     return state_file, state
 
@@ -275,37 +286,30 @@ def resume_migration(
     progress: ProgressCallback | None = None,
     checkpoint_every: int = _DEFAULT_CHECKPOINT_EVERY,
 ) -> tuple[Path, dict]:
-    state_file = Path(state_path).expanduser().resolve()
+    state_file = _resolve_state_path(state_path)
     if not state_file.is_file():
-        raise MigrationError(f"迁移状态文件不存在: {state_file}")
+        raise MigrationError(f"源文件删除状态不存在: {state_file}")
     state = read_json(state_file)
     if not isinstance(state, dict):
-        raise MigrationError("迁移状态文件格式无效")
-
+        raise MigrationError("源文件删除状态格式无效")
     try:
         backup_path = Path(str(state["backup_path"])).expanduser().resolve()
     except (KeyError, OSError, RuntimeError) as exc:
-        raise MigrationError("迁移状态文件缺少有效 backup_path") from exc
-
-    # Always verify the complete backup again before retrying any removal.
+        raise MigrationError("源文件删除状态缺少有效 backup_path") from exc
     manifest = verify_backup(backup_path)
     manifest_map = _validate_state(state, manifest, backup_path)
-    _reject_unsafe_state_location(state_file, backup_path, manifest_map)
 
-    # A path that was already recorded as removed but has reappeared may contain
-    # newly-created data. Never auto-delete it during resume, even if its content
-    # happens to match the old backup byte-for-byte.
     for row in state["items"]:
         if row.get("state") in ("deleted", "already_absent"):
             source = Path(row["source_path"])
             if _entry_exists(source):
                 row["state"] = "reappeared"
-                row["error"] = "源路径在此前移除后重新出现；为避免删除新数据，本次不自动处理"
+                row["error"] = "源路径在此前删除后重新出现；为避免删除新数据，本次不自动处理"
+    _checkpoint(state_file, state)
 
     retry_rows = [row for row in state["items"] if row.get("state") in ("pending", "failed")]
     total = len(retry_rows)
     every = max(1, int(checkpoint_every))
-
     for index, row in enumerate(retry_rows, start=1):
         source = Path(row["source_path"])
         if not _entry_exists(source):
@@ -315,8 +319,7 @@ def resume_migration(
             key = os.path.normcase(os.path.abspath(str(row["source_path"])))
             _remove_one(row, manifest_map[key])
         _notify(progress, "remove", index, total, row["source_path"])
-        if row["state"] == "failed" or index % every == 0 or index == total:
+        if index % every == 0 or row["state"] == "failed" or index == total:
             _checkpoint(state_file, state)
-
     _checkpoint(state_file, state)
     return state_file, state
