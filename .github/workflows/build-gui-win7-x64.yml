@@ -118,7 +118,7 @@ jobs:
           if (-not $vs) { throw "Visual C++ build tools not found" }
           $vcvars = Join-Path $vs "VC\Auxiliary\Build\vcvars64.bat"
           if (-not (Test-Path $vcvars)) { throw "vcvars64.bat not found" }
-          cmd /c "`"$vcvars`" && rc /nologo /fo dist\gui_launcher.res packaging\gui_launcher.rc && cl /nologo /O2 /MT /DUNICODE /D_UNICODE /Fe:dist\FileCheck-GUI.exe packaging\gui_launcher.c dist\gui_launcher.res /link /SUBSYSTEM:WINDOWS shell32.lib"
+          cmd /c "`"$vcvars`" && rc /nologo /fo dist\gui_launcher.res packaging\gui_launcher.rc && cl /nologo /O2 /MT /DUNICODE /D_UNICODE /Fe:dist\FileCheck-GUI.exe packaging\gui_launcher.c dist\gui_launcher.res /link /SUBSYSTEM:WINDOWS shell32.lib user32.lib"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           if (-not (Test-Path "dist\FileCheck-GUI.exe")) { throw "native FileCheck-GUI.exe was not produced" }
 
