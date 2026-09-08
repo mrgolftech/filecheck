@@ -80,6 +80,7 @@ def run_restore_preflight(value: str | Path, conflict: str, task: TaskContext) -
         task.raise_if_cancelled()
         ratio = current / total if total else 0.0
         task.set_progress(0.75 * ratio, f"正在验证备份：{current}/{total}")
+        task.raise_if_cancelled()
         if current == 1 or current == total or current % 25 == 0:
             task.log(f"验证 {current}/{total}: {path}")
 
@@ -89,6 +90,7 @@ def run_restore_preflight(value: str | Path, conflict: str, task: TaskContext) -
     backup._preflight_restore_targets(items)
 
     task.set_progress(0.85, "正在检查原始路径冲突……")
+    task.raise_if_cancelled()
     conflicts = sum(1 for item in items if _target_exists(Path(str(item["source_path"]))))
     missing = len(items) - conflicts
     if mode == "skip":
@@ -128,6 +130,7 @@ def run_restore(value: str | Path, conflict: str, task: TaskContext) -> RestoreR
 
     task.log("正式恢复开始。核心会在写入任何目标文件前再次验证整个备份。")
     task.set_progress(0.0, "正在再次验证备份完整性……")
+    task.raise_if_cancelled()
     last_reported = {"verify": 0, "restore": 0}
 
     def progress(stage: str, current: int, total: int, path: str) -> None:
@@ -136,12 +139,13 @@ def run_restore(value: str | Path, conflict: str, task: TaskContext) -> RestoreR
         if stage == "verify":
             value = 0.45 * ratio
             label = f"正式恢复前再次验证备份：{current}/{total}"
-            if task.is_cancelled():
-                raise TaskCancelled("恢复已在写入任何目标文件之前取消")
         else:
             value = 0.45 + 0.55 * ratio
             label = f"正在恢复文件：{current}/{total}"
         task.set_progress(value, label)
+
+        if stage == "verify" and task.is_cancelled():
+            raise TaskCancelled("恢复已在写入任何目标文件之前取消")
 
         previous = last_reported.get(stage, 0)
         if current == 1 or current == total or current - previous >= 25:
