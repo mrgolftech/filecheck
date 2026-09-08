@@ -127,19 +127,29 @@ def run_restore(value: str | Path, conflict: str, task: TaskContext) -> RestoreR
     file_count = len(manifest["items"])
 
     task.log("正式恢复开始。核心会在写入任何目标文件前再次验证整个备份。")
-    task.set_progress(None, "正在再次验证备份完整性……")
-    last_reported = 0
+    task.set_progress(0.0, "正在再次验证备份完整性……")
+    last_reported = {"verify": 0, "restore": 0}
 
     def progress(stage: str, current: int, total: int, path: str) -> None:
-        nonlocal last_reported
         total_safe = max(1, int(total))
         ratio = max(0.0, min(1.0, float(current) / float(total_safe)))
-        task.set_progress(ratio, f"正在恢复文件：{current}/{total}")
-        if current == 1 or current == total or current - last_reported >= 25:
-            last_reported = current
-            task.log(f"恢复 {current}/{total}: {path}")
-        if task.is_cancelled():
-            raise TaskCancelled("恢复已在当前文件完成校验后的安全点停止；已完成项不会回滚")
+        if stage == "verify":
+            value = 0.45 * ratio
+            label = f"正式恢复前再次验证备份：{current}/{total}"
+            if task.is_cancelled():
+                raise TaskCancelled("恢复已在写入任何目标文件之前取消")
+        else:
+            value = 0.45 + 0.55 * ratio
+            label = f"正在恢复文件：{current}/{total}"
+        task.set_progress(value, label)
+
+        previous = last_reported.get(stage, 0)
+        if current == 1 or current == total or current - previous >= 25:
+            last_reported[stage] = current
+            task.log(f"{label}  {path}")
+
+        if stage == "restore" and task.is_cancelled():
+            raise TaskCancelled("恢复已在当前文件完成最终校验后的安全点停止；已完成项不会回滚")
 
     started = time.perf_counter()
     results = backup.restore_backup(backup_path, conflict=mode, progress=progress)
