@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from filecheck import backup
+from filecheck import backup, cli
+from filecheck.portable_everything import load_index_state
 
 from .scan_service import ScanResult
 from .settings_service import current_backup_root
@@ -42,7 +44,37 @@ def suggested_destination() -> Optional[str]:
     return current_backup_root()
 
 
+def _normalized_path(value: Optional[str]) -> str:
+    if not value:
+        return ""
+    return os.path.normcase(os.path.abspath(os.path.expanduser(str(value))))
+
+
+def _validate_scan_basis(scan_result: ScanResult) -> None:
+    payload = scan_result.payload
+    rules_path = Path(cli._default_rules_path()).expanduser().resolve()
+    current_rules = cli._rules_metadata(rules_path)
+    scanned_rules = payload.get("rules") or {}
+    if str(scanned_rules.get("sha256") or "") != str(current_rules.get("sha256") or ""):
+        raise RuntimeError("扫描关键词或文件类型已经修改，请重新扫描后再备份")
+
+    state = load_index_state(required=True)
+    scanned_updated = str(payload.get("index_updated_at") or "")
+    current_updated = str(state.get("updated_at") or "")
+    if not scanned_updated or scanned_updated != current_updated:
+        raise RuntimeError("FileCheck 索引已经创建或更新，请重新扫描后再备份")
+
+    scanned_roots = [_normalized_path(str(value)) for value in payload.get("selected_roots", [])]
+    current_roots = [_normalized_path(str(value)) for value in state.get("selected_roots", [])]
+    if scanned_roots != current_roots:
+        raise RuntimeError("当前索引范围与扫描时不同，请重新扫描后再备份")
+
+    if _normalized_path(payload.get("backup_root")) != _normalized_path(current_backup_root()):
+        raise RuntimeError("备份根目录已经修改，请重新扫描后再备份")
+
+
 def _source_paths(scan_result: ScanResult) -> List[str]:
+    _validate_scan_basis(scan_result)
     items = scan_result.items
     if not items:
         raise RuntimeError("当前扫描结果没有可备份文件")
@@ -68,6 +100,9 @@ def _resolve_destination(value: str) -> Path:
     destination.mkdir(parents=True, exist_ok=True)
     if not destination.is_dir():
         raise RuntimeError(f"备份目标不是有效目录: {destination}")
+    configured = current_backup_root()
+    if configured and _normalized_path(str(destination)) != _normalized_path(configured):
+        raise RuntimeError("备份页面只能使用“设置”中保存的统一备份根目录")
     return destination
 
 
