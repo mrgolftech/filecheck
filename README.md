@@ -1,25 +1,36 @@
 # FileCheck
 
-FileCheck 是一个面向 Windows 终端的离线文件自查、批量目录备份、完整性验证、源文件安全删除和原路径恢复工具。
+FileCheck 是一个面向 Windows 终端的离线文件自查工具，用于：**快速索引 → 关键词扫描 → 人工核对 → 批量目录备份 → 完整性验证 → 源文件安全删除 → 按原路径恢复**。
 
-> **V0.1.1 推荐流程：专用 Everything 索引 → 只读扫描 → 人工核对 JSON/CSV → 目录方式批量备份 → 人工检查 → 再次全量 SHA-256 验证 → 显式删除 manifest 中的源文件 → 必要时原路径恢复。**
+> **V0.1.1 推荐流程：专用 Everything 索引 → 扫描候选 → 人工核对 JSON/CSV → 创建目录备份 → 检查备份 → 删除源文件 → 必要时恢复。**
 >
-> `scan` 和 `backup` 永远不删除源文件。关键词命中只表示候选，不代表违规或最终分类结论。
+> `scan` 和 `backup` 永远不会删除源文件。关键词命中仅表示“候选”，不代表违规或最终分类结论。
 
-## V0.1.1 设计原则
+## V0.1.1 发布包
 
-- **便携运行**：正式 Windows 包同时携带 `FileCheck.exe`、`Everything.exe`、`es.exe` 和默认规则。
-- **独立索引**：FileCheck 启动名为 `FileCheck` 的专用 Everything 1.4 实例，不依赖也不修改用户另行安装的默认 Everything 实例。
-- **目录备份唯一格式**：V0.1.1 不创建 ZIP，也不直接读取 ZIP。
-- **恢复清单不可变**：`manifest.json` 只记录备份创建事实，不记录 `source_removed`。
-- **删除状态独立**：删除后写 `source-removal.json`；有失败项时额外写 `not-deleted.txt`。
-- **只删除明确文件**：仅删除 manifest 中逐项列出的 `source_path`，不递归删除父目录，也不自动删除空目录。
-- **全量校验优先**：正式备份发布、源文件删除、恢复前均执行完整性校验。
-- **可恢复失败**：大量文件删除时，单个文件被占用/权限不足会跳过并继续；关闭占用程序后可继续失败项。
+正式 Release 提供 3 个便携包：
+
+- `FileCheck-v0.1.1-win10plus-x64.zip`：Windows 10 / 11 64 位
+- `FileCheck-v0.1.1-win7-x64.zip`：Windows 7 SP1 64 位
+- `FileCheck-v0.1.1-win7-x86.zip`：Windows 7 SP1 32 位
+
+解压后直接运行，不需要安装 Python，也不要求系统预先安装 Everything。
+
+## V0.1.1 核心特性
+
+- **独立便携索引**：发布包内置 Everything 1.4.1.1032 和 ES 1.1.0.37，使用名为 `FileCheck` 的专用实例，不依赖、不修改用户另外安装的 Everything。
+- **NTFS 快速索引**：本地 NTFS 固定磁盘优先使用 MFT/USN；非 NTFS 或显式目录使用兼容目录索引。
+- **全部运行数据本地化**：索引配置、数据库、操作状态、扫描结果都保存在 FileCheck 程序目录下。
+- **目录备份**：V0.1.1 新建备份只使用目录结构，不创建 ZIP，保留原始盘符和目录层级，便于人工检查。
+- **可继续备份**：备份复制中断后可以继续未完成任务。
+- **manifest 不可变**：`manifest.json` 只记录备份事实；删除状态单独写入 `source-removal.json`。
+- **安全删除**：删除前执行整批 SHA-256 强校验；确认后使用快速元数据检查避免重复整文件哈希；只读属性自动处理，ACL/占用等真实错误仍安全失败。
+- **安全恢复**：恢复前再次完整验证备份；默认 `skip`，不覆盖已经存在的文件；恢复过程使用临时文件、SHA-256 校验和原子替换。
+- **旧备份兼容**：V0.1.0 ZIP 需要先人工解压，解压后的 `manifest.json + files\` 可由 V0.1.1 校验和恢复。
 
 ## 便携目录
 
-正式包解压后建议保持：
+正式包解压后建议保持完整目录结构：
 
 ```text
 FileCheck\
@@ -30,59 +41,109 @@ FileCheck\
 │  ├─ Everything.exe
 │  └─ es.exe
 ├─ runtime\
-│  └─ everything\
-│     ├─ Everything.ini
-│     ├─ Everything.db
-│     └─ index-config.json
+│  ├─ everything\
+│  │  ├─ Everything.ini
+│  │  ├─ Everything-FileCheck.db
+│  │  └─ index-config.json
+│  └─ operations\
 └─ scan-results\
 ```
 
-`runtime` 和 `scan-results` 会在运行过程中自动创建。
+`runtime` 和 `scan-results` 会在首次使用时自动创建。
 
-## 推荐交互流程
+## 启动方式
 
-无参数启动：
+推荐右键：
 
 ```text
-FileCheck.exe
+FileCheck.exe → 以管理员身份运行
 ```
 
-当前菜单按生命周期组织：
+交互式主流程要求管理员权限，主要用于 NTFS MFT/USN 快速索引，以及受保护路径下的删除/恢复操作。
+
+高级 CLI（例如 `--help`、`selftest`）仍可单独运行。
+
+## 主菜单与使用说明
+
+无参数启动 `FileCheck.exe` 后，V0.1.1 主菜单为：
 
 ```text
-1. 环境与索引
-2. 扫描文件
-3. 核对扫描结果（JSON / CSV）
-4. 创建目录备份
-5. 检查并再次验证备份
-6. 删除源文件 / 继续未完成删除
-7. 恢复备份文件到各自原路径
-8. 继续未完成的备份复制任务
-9. 运行本机自检
-10. 高级命令帮助
+1. 环境检查与索引创建
+2. 扫描文件列表
+3. 核对扫描结果
+4. 创建备份 / 继续未完成的备份任务
+5. 检查备份
+6. 删除源文件 / 继续未完成的删除任务
+7. 恢复备份文件到源路径
 0. 退出
 ```
 
-### 1. 环境与索引
+### 1. 环境检查与索引创建
 
-首次使用选择要纳入自查的磁盘/目录，并设置统一备份根目录。FileCheck 会创建自己的 Everything 配置，自动排除程序目录和备份根目录，建立/重建专用索引，并将索引数据保存在 `runtime\everything`。
+首次使用先执行第 1 项。
 
-### 2. 扫描
+程序会检测磁盘类型，并提示选择索引范围。典型输入：
 
-默认仅按**文件名**匹配规则关键词；可显式选择同时匹配完整目录路径。
+```text
+直接回车 / A = 所有本地固定磁盘
+C,D          = 只索引 C: 和 D:
+C D          = 同样可以
+```
 
-输出：
+默认不会自动把可移动 USB 磁盘包含进“全部本地固定磁盘”；需要时可以显式选择。
+
+随后设置统一备份根目录。程序目录和备份根目录会自动从索引及后续扫描结果中排除。
+
+建立索引时使用独立 `FileCheck` Everything 实例，数据库保存到：
+
+```text
+runtime\everything\Everything-FileCheck.db
+```
+
+索引过程不启动永久 Windows 服务，也不会弹出 Everything 搜索窗口。
+
+### 2. 扫描文件列表
+
+进入第 2 项时，程序会先显示当前实际生效的：
+
+- 关键词分组；
+- 文件扩展名；
+- `config\rules.json` 的完整路径。
+
+如果要修改扫描关键词或扩展名，直接编辑：
+
+```text
+config\rules.json
+```
+
+保存后重新执行扫描即可。
+
+扫描结果默认输出：
 
 ```text
 scan-results\scan-results-YYYYMMDD-HHMMSS.json
 scan-results\scan-results-YYYYMMDD-HHMMSS.csv
 ```
 
-JSON 是后续自动处理输入，CSV 便于人工核对。
+JSON 用于后续程序处理，CSV 便于人工核对。当前快速扫描主要依据 Everything 文件名/路径索引，不读取 DOCX/PDF/XLSX/PPTX 等文档正文。
 
-### 3. 创建目录备份
+### 3. 核对扫描结果
 
-扫描结果默认按**全部候选文件**批量处理，不要求逐文件确认。
+建议先查看 CSV/JSON，确认关键词命中的候选文件是否确实需要备份。
+
+FileCheck 不要求逐文件确认；核对完成后可将整批候选统一备份。
+
+### 4. 创建备份 / 继续未完成的备份任务
+
+进入第 4 项后：
+
+```text
+1. 创建新备份
+2. 继续未完成的备份任务
+0. 返回主菜单
+```
+
+V0.1.1 新建备份只使用**目录备份**。
 
 例如：
 
@@ -92,7 +153,7 @@ C:\ProjectB\报告.pdf
 D:\资料\报告.pdf
 ```
 
-分别映射为：
+会分别备份为：
 
 ```text
 files\C\ProjectA\报告.pdf
@@ -100,9 +161,9 @@ files\C\ProjectB\报告.pdf
 files\D\资料\报告.pdf
 ```
 
-相同文件名不会互相覆盖；只有完全相同的绝对源路径才去重。
+不同目录中的同名文件不会互相覆盖；只有完全相同的绝对源路径才去重。
 
-正式批次：
+正式备份批次：
 
 ```text
 <backup-root>\FC-...\
@@ -110,11 +171,23 @@ files\D\资料\报告.pdf
 └─ files\...
 ```
 
-复制期间先使用 `.FC-....incomplete` 暂存目录。只有完整复制并通过全量大小 + SHA-256 验证后，才发布为正式 `FC-*` 批次。
+复制过程中使用 `.FC-....incomplete` 暂存目录。只有复制完成并通过大小 + SHA-256 校验后，才会发布为正式 `FC-*` 批次。
+
+### 5. 检查备份
+
+第 5 项会对备份批次逐文件执行：
+
+```text
+文件存在性
+→ 文件大小
+→ SHA-256
+```
+
+建议在删除源文件前，先用资源管理器人工查看备份目录，再执行一次第 5 项完整验证。
 
 ## manifest.json
 
-V0.1.1 manifest 记录每个普通文件的核心恢复信息：
+每个备份文件记录：
 
 ```text
 source_path
@@ -124,62 +197,112 @@ mtime_ns
 sha256
 ```
 
-`manifest.json` 不记录 `source_removed`。备份事实和后续删除状态属于两个不同生命周期。
+`manifest.json` 不记录 `source_removed`，不会因后续删除或恢复而修改。
 
-## 源文件删除
+## 6. 删除源文件 / 继续未完成的删除任务
 
-建议在目录备份完成后先人工查看 `files\`，再运行一次独立 `verify`，最后才进入删除。
+删除是独立的显式操作，备份成功本身不会自动删除任何源文件。
 
-删除入口会再次执行：
+### 第一次删除
+
+流程为：
 
 ```text
-完整验证备份
-→ 全部源文件重新检查 size + SHA-256
-→ 任一源文件异常：删除阶段不启动
-→ 全部一致：批次级 YES 确认
-→ 每个文件删除前再次即时复核
-→ 只 unlink manifest 中的 source_path
+完整验证整个备份
+→ 对全部源文件执行一次 size + SHA-256 强复核
+→ 任一源文件异常：整批删除不启动
+→ 全部一致：提示输入 YES
+→ YES 后快速确认备份/manifest 未变化
+→ 每个源文件按预检元数据快照快速检查
+→ 删除 manifest 明确列出的 source_path
 ```
 
-删除状态保存在同一备份批次内：
+为提高大量文件删除速度，`YES` 之后不会再给每个文件重复计算一次完整 SHA-256；而是检查 size、mtime、文件标识等预检快照。如果在整批 SHA-256 复核后文件发生变化，该文件会被跳过并标记为失败。
+
+Windows 的“只读”属性不会阻止删除：程序会只清除只读/写保护位后删除；如果实际问题是 ACL 权限、文件占用、杀毒软件拦截等，则仍会标记为 `failed`。
+
+如果进入真正删除阶段后发现某个源文件已经不存在，则记录为：
+
+```text
+already_absent
+```
+
+并继续处理其他文件。
+
+删除状态保存在备份批次内：
 
 ```text
 FC-...\
 ├─ manifest.json
 ├─ source-removal.json
-├─ not-deleted.txt        # 只有失败项时存在
+├─ not-deleted.txt        # 仅有失败/reappeared 项时存在
 └─ files\...
 ```
 
-如果某个文件因锁定、权限或变化而无法删除，该文件标记为 `failed`，其余文件继续处理；关闭占用程序后可以继续失败项。
+### 继续未完成删除
 
-如果此前已经删除的路径后来又出现，resume 会标记为 `reappeared`，不会自动再次删除，以避免误删新生成的数据。
+继续删除时会重新完整验证备份，并对待重试的源文件重新做强校验，因此即使距离第一次删除已经过去较长时间，也不会直接使用旧校验结果。
 
-## 恢复
-
-V0.1.1 恢复只接受**目录备份**。恢复前先完整验证整个备份，再按照各自 `source_path` 恢复。
-
-冲突策略：
+如果一个已经 `deleted` 或 `already_absent` 的原路径后来重新出现，程序会标记为：
 
 ```text
-skip       原路径存在时跳过（默认/推荐）
-rename     恢复成另一个名称
-overwrite  先写同目录临时文件并校验，成功后原子替换
+reappeared
 ```
+
+并禁止自动再次删除，避免把后来生成的新文件误删。
+
+## 7. 恢复备份文件到源路径
+
+V0.1.1 恢复只接受已经展开为目录的备份批次。
+
+恢复冲突策略：
+
+```text
+1 = skip       默认/推荐：目标存在就保留，不覆盖
+2 = rename     恢复为另一个文件名
+3 = overwrite  校验临时文件后原子替换目标
+```
+
+选择策略后，程序会先提示：
+
+```text
+正在执行恢复前备份完整性校验（SHA-256）……
+校验通过后将自动开始恢复。
+```
+
+这是正常流程，不是程序卡死。备份文件较多或较大时，全量 SHA-256 会需要一定时间。
+
+实际恢复过程为：
+
+```text
+恢复前完整验证备份
+→ 复制到目标目录临时文件
+→ 临时文件 size + SHA-256 校验
+→ 原子替换/落盘
+→ 最终目标再次 size + SHA-256 校验
+```
+
+默认 `skip` 策略下，被跳过的文件会记录到：
+
+```text
+<backup-batch>\restore-skipped.txt
+```
+
+如果目标文件内容与备份一致，报告会明确标记“内容与备份一致”；如果不同或无法确认，则只跳过，不覆盖。
 
 ### 恢复 V0.1.0 旧 ZIP
 
-V0.1.1 本身不包含 ZIP 读取/解压逻辑。如果需要恢复旧 ZIP：
+V0.1.1 不直接读取 ZIP 文件。如需恢复 V0.1.0 旧 ZIP：
 
-1. 使用 Windows/第三方工具完整解压；
-2. 确认解压目录含 `manifest.json` 和 `files\`；
-3. 将**解压后的目录**交给 FileCheck。
+1. 使用 Windows 或第三方工具完整解压；
+2. 确认解压目录包含 `manifest.json` 和 `files\`；
+3. 在第 7 项选择这个**解压后的目录**。
 
-旧 manifest 中即使仍是 `"mode": "zip"`，只要已经完整解压为正常目录，V0.1.1 会按目录方式校验和恢复。
+旧 manifest 即使仍包含 `"mode": "zip"`，只要已经完整解压，V0.1.1 仍可按目录方式校验和恢复。
 
 ## 高级 CLI
 
-典型命令：
+主菜单之外保留高级命令：
 
 ```powershell
 FileCheck.exe doctor
@@ -193,27 +316,15 @@ FileCheck.exe restore H:\FileCheckBackup\FC-... --conflict skip
 FileCheck.exe selftest
 ```
 
-`migrate` / `migrate-resume` 作为兼容的高级别名保留，但不属于推荐的交互式主流程。
-
-## 扫描规则
-
-默认规则：
-
-```text
-config\rules.json
-```
-
-扫描结果只写入规则文件名及其 SHA-256，不写本机规则绝对路径。
-
-当前快速扫描主要基于 Everything 文件名/路径索引，不读取 DOCX/PDF/XLSX/PPTX 等文档正文。正文深度扫描属于后续版本能力。
+`selftest` 是开发/回归用的临时文件回环测试，不再放进普通菜单。
 
 ## 安全边界
 
-FileCheck 当前聚焦普通文件：内容字节、原始绝对路径、文件大小、SHA-256 和基础 mtime。
+FileCheck 当前聚焦普通文件的内容字节、原始绝对路径、文件大小、SHA-256 和基础 mtime。
 
 当前不承诺完整保留/恢复 ACL、EFS、ADS、硬链接、稀疏文件、重解析点、所有者、审计等高级 Windows 文件系统元数据。
 
-FileCheck **不是痕迹清理工具**。它不会清理 Recent、浏览器历史、Office/WPS MRU、USBSTOR、注册表等系统使用记录。
+FileCheck **不是痕迹清理工具**，不会清理 Recent、浏览器历史、Office/WPS MRU、USBSTOR、注册表等系统使用记录。
 
 ## 开发与测试
 
@@ -225,7 +336,13 @@ python -m pytest -q
 filecheck selftest
 ```
 
-V0.1.1 CI 覆盖 Windows / Ubuntu、Python 3.10 / 3.12。Windows 7 兼容包继续采用 Python 3.8.10 + PyInstaller 5.13.2 构建路线，并要求正式发布前进行真实 Win7 实机回归。
+构建路线：
+
+- Windows 10/11 x64：Python 3.12 + PyInstaller 6
+- Windows 7 x64：Python 3.8.10 x64 + PyInstaller 5.13.2
+- Windows 7 x86：Python 3.8.10 x86 + PyInstaller 5.13.2，并校验 PE machine=`0x014C`
+
+正式发布包均包含对应架构的 Everything / ES，并在 GitHub Actions 中执行回归测试、`selftest`、可执行文件 smoke test 和便携包内容检查。
 
 ## 第三方组件
 
