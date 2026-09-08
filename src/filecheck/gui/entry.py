@@ -19,50 +19,88 @@ def is_windows_admin() -> bool:
         return False
 
 
-def _install_admin_guards(is_admin: bool) -> None:
-    if is_admin or getattr(FileCheckApp, "_filecheck_admin_guards", False):
+def _invalidate_scan_basis(app: FileCheckApp, message: str) -> None:
+    app._last_scan_result = None
+    app._last_backup_preflight = None
+    result_page = app._pages.get("results")
+    if result_page is not None and hasattr(result_page, "clear_result"):
+        result_page.clear_result(message)
+    backup_page = app._pages.get("backup")
+    if backup_page is not None and hasattr(backup_page, "clear_scan_result"):
+        backup_page.clear_scan_result(message)
+    try:
+        app.event_generate("<<FileCheckScanBasisChanged>>", when="tail")
+    except Exception:
+        pass
+
+
+def _install_runtime_policy(is_admin: bool) -> None:
+    if getattr(FileCheckApp, "_filecheck_runtime_policy", False):
         return
 
+    original_save = FileCheckApp._save_settings
+    original_handle = FileCheckApp._handle_task_event
     original_index = FileCheckApp._start_index_build
     original_remove = FileCheckApp._start_removal
     original_resume = FileCheckApp._resume_removal
     original_restore = FileCheckApp._start_restore
 
-    def guarded_index(self, selected_roots) -> None:
-        self.set_status("创建 NTFS 快速索引需要管理员权限，请以管理员身份重新运行 FileCheck", "danger")
-        page = self._pages.get("scan")
-        if page is not None and hasattr(page, "finish_error"):
-            page.finish_error("当前不是管理员模式，无法创建/更新 NTFS 快速索引。请以管理员身份重新运行。")
+    def wrapped_save(self, backup_roots, keywords, extensions) -> None:
+        original_save(self, backup_roots, keywords, extensions)
+        _invalidate_scan_basis(self, "扫描设置或备份目录已变化，旧扫描结果已失效。请重新扫描。")
 
-    def guarded_remove(self, value: str) -> None:
-        self.set_status("源文件删除需要管理员权限，请以管理员身份重新运行 FileCheck", "danger")
-        page = self._pages.get("migration")
-        if page is not None and hasattr(page, "finish_error"):
-            page.finish_error("当前不是管理员模式，已阻止源文件删除。")
+    def wrapped_handle(self, event) -> None:
+        active_before = self._active_task
+        original_handle(self, event)
+        if event.kind == "success" and active_before == "index":
+            _invalidate_scan_basis(self, "索引已重新创建，旧扫描结果已失效。请重新扫描。")
+        if event.kind == "success" and active_before == "restore":
+            blocked = int(getattr(event.payload, "skipped_error", 0) or 0)
+            if blocked:
+                report = getattr(event.payload, "skipped_report", None)
+                suffix = f"；清单：{report}" if report else ""
+                self.set_status(f"恢复完成，但有 {blocked} 个文件无法覆盖并已跳过{suffix}", "warning")
 
-    def guarded_resume(self, value: str) -> None:
-        self.set_status("继续源文件删除需要管理员权限，请以管理员身份重新运行 FileCheck", "danger")
-        page = self._pages.get("migration")
-        if page is not None and hasattr(page, "finish_error"):
-            page.finish_error("当前不是管理员模式，已阻止继续删除。")
+    FileCheckApp._save_settings = wrapped_save
+    FileCheckApp._handle_task_event = wrapped_handle
 
-    def guarded_restore(self, value: str, conflict: str) -> None:
-        if str(conflict).strip().lower() == "overwrite":
-            self.set_status("覆盖恢复需要管理员权限，请以管理员身份重新运行 FileCheck", "danger")
-            page = self._pages.get("restore")
+    if not is_admin:
+        def guarded_index(self, selected_roots) -> None:
+            self.set_status("创建 NTFS 快速索引需要管理员权限，请以管理员身份重新运行 FileCheck", "danger")
+            page = self._pages.get("scan")
             if page is not None and hasattr(page, "finish_error"):
-                page.finish_error("当前不是管理员模式，已阻止覆盖已有文件。可改用“跳过”或“重命名”，或重新以管理员身份运行。")
-            return
-        original_restore(self, value, conflict)
+                page.finish_error("当前不是管理员模式，无法创建/更新 NTFS 快速索引。请以管理员身份重新运行。")
 
-    # Patch before FileCheckApp is instantiated so page callbacks capture the
-    # guarded methods instead of the original bound methods.
-    FileCheckApp._start_index_build = guarded_index
-    FileCheckApp._start_removal = guarded_remove
-    FileCheckApp._resume_removal = guarded_resume
-    FileCheckApp._start_restore = guarded_restore
-    FileCheckApp._filecheck_admin_guards = True
-    FileCheckApp._filecheck_original_admin_methods = (
+        def guarded_remove(self, value: str) -> None:
+            self.set_status("源文件删除需要管理员权限，请以管理员身份重新运行 FileCheck", "danger")
+            page = self._pages.get("migration")
+            if page is not None and hasattr(page, "finish_error"):
+                page.finish_error("当前不是管理员模式，已阻止源文件删除。")
+
+        def guarded_resume(self, value: str) -> None:
+            self.set_status("继续源文件删除需要管理员权限，请以管理员身份重新运行 FileCheck", "danger")
+            page = self._pages.get("migration")
+            if page is not None and hasattr(page, "finish_error"):
+                page.finish_error("当前不是管理员模式，已阻止继续删除。")
+
+        def guarded_restore(self, value: str, conflict: str) -> None:
+            if str(conflict).strip().lower() == "overwrite":
+                self.set_status("覆盖恢复需要管理员权限，请以管理员身份重新运行 FileCheck", "danger")
+                page = self._pages.get("restore")
+                if page is not None and hasattr(page, "finish_error"):
+                    page.finish_error("当前不是管理员模式，已阻止覆盖已有文件。可改用“跳过”或“重命名”，或重新以管理员身份运行。")
+                return
+            original_restore(self, value, conflict)
+
+        FileCheckApp._start_index_build = guarded_index
+        FileCheckApp._start_removal = guarded_remove
+        FileCheckApp._resume_removal = guarded_resume
+        FileCheckApp._start_restore = guarded_restore
+
+    FileCheckApp._filecheck_runtime_policy = True
+    FileCheckApp._filecheck_original_runtime_methods = (
+        original_save,
+        original_handle,
         original_index,
         original_remove,
         original_resume,
@@ -72,7 +110,7 @@ def _install_admin_guards(is_admin: bool) -> None:
 
 def create_app() -> FileCheckApp:
     admin = is_windows_admin()
-    _install_admin_guards(admin)
+    _install_runtime_policy(admin)
     app = FileCheckApp()
     ctk.set_appearance_mode(current_appearance())
     app._filecheck_is_admin = admin
