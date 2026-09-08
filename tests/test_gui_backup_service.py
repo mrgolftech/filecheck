@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from filecheck import cli
 from filecheck.backup import verify_backup
 from filecheck.gui import backup_service
 from filecheck.gui.scan_service import ScanResult
@@ -27,7 +28,7 @@ class FakeTask:
         return None
 
 
-def _scan_result(tmp_path: Path, *, inaccessible: bool = False) -> ScanResult:
+def _scan_result(tmp_path: Path, backup_root: Path, *, inaccessible: bool = False) -> ScanResult:
     source_dir = tmp_path / "source"
     source_dir.mkdir()
     first = source_dir / "机密报告.txt"
@@ -56,19 +57,36 @@ def _scan_result(tmp_path: Path, *, inaccessible: bool = False) -> ScanResult:
             "accessible": True,
         },
     ]
+    rules_path = Path(cli._default_rules_path()).resolve()
     return ScanResult(
         json_path=json_path,
         csv_path=csv_path,
-        payload={"items": items},
+        payload={
+            "items": items,
+            "rules": cli._rules_metadata(rules_path),
+            "index_updated_at": "test-index-v1",
+            "selected_roots": [],
+            "backup_root": str(backup_root.resolve()),
+        },
         counts={"total": 2, "high": 1, "sensitive": 0, "review": 1},
         total_size=8,
         inaccessible_count=1 if inaccessible else 0,
     )
 
 
-def test_backup_preflight_and_run_reuse_verified_core(tmp_path: Path) -> None:
-    result = _scan_result(tmp_path)
+def _patch_scan_basis(monkeypatch: pytest.MonkeyPatch, backup_root: Path, *, updated_at: str = "test-index-v1") -> None:
+    monkeypatch.setattr(
+        backup_service,
+        "load_index_state",
+        lambda required=True: {"updated_at": updated_at, "selected_roots": []},
+    )
+    monkeypatch.setattr(backup_service, "current_backup_root", lambda: str(backup_root.resolve()))
+
+
+def test_backup_preflight_and_run_reuse_verified_core(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     destination = tmp_path / "backup-root"
+    _patch_scan_basis(monkeypatch, destination)
+    result = _scan_result(tmp_path, destination)
     request = backup_service.BackupRequest(result, str(destination))
     task = FakeTask()
 
@@ -90,10 +108,30 @@ def test_backup_preflight_and_run_reuse_verified_core(tmp_path: Path) -> None:
     assert any("全量 SHA-256 校验" in line for line in task.logs)
 
 
-def test_backup_preflight_rejects_inaccessible_scan_items(tmp_path: Path) -> None:
-    result = _scan_result(tmp_path, inaccessible=True)
-    request = backup_service.BackupRequest(result, str(tmp_path / "backup-root"))
+def test_backup_preflight_rejects_inaccessible_scan_items(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    destination = tmp_path / "backup-root"
+    _patch_scan_basis(monkeypatch, destination)
+    result = _scan_result(tmp_path, destination, inaccessible=True)
+    request = backup_service.BackupRequest(result, str(destination))
     with pytest.raises(RuntimeError, match="当前不可访问"):
+        backup_service.preflight_backup(request, FakeTask())
+
+
+def test_backup_rejects_scan_after_index_changes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    destination = tmp_path / "backup-root"
+    result = _scan_result(tmp_path, destination)
+    _patch_scan_basis(monkeypatch, destination, updated_at="test-index-v2")
+    request = backup_service.BackupRequest(result, str(destination))
+    with pytest.raises(RuntimeError, match="索引已经创建或更新"):
+        backup_service.preflight_backup(request, FakeTask())
+
+
+def test_backup_rejects_destination_outside_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    configured = tmp_path / "configured-backup"
+    _patch_scan_basis(monkeypatch, configured)
+    result = _scan_result(tmp_path, configured)
+    request = backup_service.BackupRequest(result, str(tmp_path / "other-backup"))
+    with pytest.raises(RuntimeError, match="统一备份根目录"):
         backup_service.preflight_backup(request, FakeTask())
 
 
