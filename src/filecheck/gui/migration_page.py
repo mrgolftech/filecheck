@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import tkinter as tk
-from pathlib import Path
 from tkinter import filedialog
 
 import customtkinter as ctk
@@ -45,7 +44,7 @@ class MigrationPage(ctk.CTkFrame):
 
         PageHeader(
             self,
-            "源文件处理",
+            "源文件删除",
             "这是独立的高风险步骤：先验证备份并复核全部源文件，再明确确认是否删除。",
         ).grid(row=0, column=0, sticky="ew")
 
@@ -176,9 +175,9 @@ class MigrationPage(ctk.CTkFrame):
                 text_color=Palette.TEXT_SECONDARY,
             )
         elif info.status == "completed":
-            self.state_pill.set_tone("success", "处理完成")
+            self.state_pill.set_tone("success", "删除完成")
             self.target_label.configure(text=f"批次：{info.batch_id}\n删除状态：{info.state_path}")
-            self.safety_label.configure(text="该批次源文件处理已经完成。", text_color=Palette.SUCCESS)
+            self.safety_label.configure(text="该批次源文件删除已经完成。", text_color=Palette.SUCCESS)
         else:
             tone = "danger" if info.failed else "warning"
             self.state_pill.set_tone(tone, "存在未完成项")
@@ -186,7 +185,7 @@ class MigrationPage(ctk.CTkFrame):
             self.safety_label.configure(
                 text=(
                     f"已有删除状态：已删除 {info.deleted}，已不存在 {info.already_absent}，"
-                    f"异常 {info.failed}，可继续处理 {info.pending}。"
+                    f"异常 {info.failed}，可继续删除 {info.pending}。"
                 ),
                 text_color=Palette.WARNING,
             )
@@ -228,7 +227,7 @@ class MigrationPage(ctk.CTkFrame):
         self.progress_bar.stop()
         self.progress_bar.configure(mode="determinate")
         self.progress_bar.set(0)
-        text = "正在继续处理未完成删除……" if resume else "正在删除已复核源文件……"
+        text = "正在继续未完成删除……" if resume else "正在删除已复核源文件……"
         self.progress_label.configure(text=text, text_color=Palette.DANGER)
         self.append_log("危险操作已确认；删除结果将持续写入 source-removal.json。")
         self._refresh_controls()
@@ -252,10 +251,10 @@ class MigrationPage(ctk.CTkFrame):
         self.progress_bar.configure(mode="determinate")
         self.progress_bar.set(1.0)
         if result.status == "completed":
-            self.progress_label.configure(text="源文件处理完成", text_color=Palette.SUCCESS)
-            self.append_log(f"处理完成：deleted={result.deleted}, already_absent={result.already_absent}")
+            self.progress_label.configure(text="源文件删除完成", text_color=Palette.SUCCESS)
+            self.append_log(f"删除完成：deleted={result.deleted}, already_absent={result.already_absent}")
         else:
-            self.progress_label.configure(text="源文件处理完成，但存在未完成项", text_color=Palette.WARNING)
+            self.progress_label.configure(text="源文件删除已结束，但存在未完成项", text_color=Palette.WARNING)
             self.append_log(f"当前状态：deleted={result.deleted}, failed={result.failed}, pending={result.pending}")
             if result.failed_report:
                 self.append_log(f"未删除清单：{result.failed_report}")
@@ -344,8 +343,8 @@ class MigrationPage(ctk.CTkFrame):
             return
         dialog = DangerConfirmDialog(
             self.winfo_toplevel(),
-            "确认继续源文件处理",
-            f"将继续处理 {self._info.pending} 个 pending/failed 项。已删除文件不会再次删除；重新出现的路径会被保护。",
+            "确认继续源文件删除",
+            f"将继续删除 {self._info.pending} 个 pending/failed 项。已删除文件不会再次删除；重新出现的路径会被保护。",
         )
         if dialog.show():
             self._on_resume(str(self._info.backup_path))
