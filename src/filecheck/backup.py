@@ -344,7 +344,7 @@ def restore_backup(
     progress: ProgressCallback | None = None,
 ) -> list[dict]:
     source_path = Path(source).expanduser()
-    manifest = verify_backup(source_path)
+    manifest = verify_backup(source_path, progress=progress)
     items = manifest["items"]
     _preflight_restore_targets(items)
     results: list[dict] = []
