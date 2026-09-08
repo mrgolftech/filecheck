@@ -26,7 +26,7 @@ class FakeTask:
             raise RuntimeError("cancelled")
 
 
-def test_settings_page_service_persists_backup_root_and_rules(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_settings_page_service_persists_backup_roots_rules_and_appearance(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     config_dir = tmp_path / "config"
     config_dir.mkdir()
     rules_path = config_dir / "rules.json"
@@ -46,22 +46,27 @@ def test_settings_page_service_persists_backup_root_and_rules(tmp_path: Path, mo
     monkeypatch.setattr(settings_service, "runtime_dir", lambda: runtime)
     monkeypatch.setattr(settings_service, "load_index_state", lambda required=False: None)
 
-    backup_root = tmp_path / "backup"
+    backup_a = tmp_path / "backup-a"
+    backup_b = tmp_path / "backup-b"
     saved = settings_service.save_settings(
-        str(backup_root),
+        [str(backup_a), str(backup_b), str(backup_a)],
         {"high": ["绝密", "绝密"], "sensitive": ["秘密"], "review": ["方案"]},
         ["DOCX", ".pdf", "pdf"],
+        appearance="dark",
     )
 
-    assert saved.backup_root == str(backup_root.resolve())
+    assert saved.backup_roots == [str(backup_a.resolve()), str(backup_b.resolve())]
+    assert saved.backup_root == str(backup_a.resolve())
+    assert saved.appearance == "dark"
     assert saved.keywords["high"] == ["绝密"]
     assert saved.extensions == ["docx", "pdf"]
-    assert backup_root.is_dir()
+    assert backup_a.is_dir() and backup_b.is_dir()
     persisted = json.loads(rules_path.read_text(encoding="utf-8"))
     assert persisted["keywords"]["review"] == ["方案"]
     assert persisted["extensions"] == ["docx", "pdf"]
     runtime_payload = json.loads((runtime / "settings.json").read_text(encoding="utf-8"))
-    assert runtime_payload["backup_root"] == str(backup_root.resolve())
+    assert runtime_payload["backup_roots"] == [str(backup_a.resolve()), str(backup_b.resolve())]
+    assert runtime_payload["appearance"] == "dark"
 
 
 def test_current_backup_root_falls_back_to_existing_index_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -76,31 +81,33 @@ def test_current_backup_root_falls_back_to_existing_index_state(tmp_path: Path, 
 
 
 def test_gui_index_service_uses_settings_and_reports_truthful_elapsed_progress(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(index_service, "current_backup_root", lambda: r"H:\FileCheckBackup")
+    monkeypatch.setattr(index_service, "current_backup_roots", lambda: [r"H:\FileCheckBackup", r"I:\FileCheckBackup"])
     captured = {}
 
-    def fake_configure(selected_roots, backup_root, progress=None):
+    def fake_configure(selected_roots, backup_root, additional_excluded_roots=(), progress=None):
         captured["roots"] = list(selected_roots)
         captured["backup_root"] = backup_root
+        captured["additional"] = list(additional_excluded_roots)
         if progress is not None:
             progress(3.2)
             progress(8.7)
         return SimpleNamespace(
-            selected_roots=[r"C:\", r"D:\"],
-            ntfs_roots=[r"C:\", r"D:\"],
+            selected_roots=["C:\\", "D:\\"],
+            ntfs_roots=["C:\\", "D:\\"],
             folder_roots=[],
-            database_path=Path(r"C:\FileCheck\runtime\everything\Everything-FileCheck.db"),
-            config_path=Path(r"C:\FileCheck\runtime\everything\Everything.ini"),
+            database_path=Path("C:\\FileCheck\\runtime\\everything\\Everything-FileCheck.db"),
+            config_path=Path("C:\\FileCheck\\runtime\\everything\\Everything.ini"),
             status=SimpleNamespace(everything_version="1.4.1.1032", es_version="1.1.0.37"),
         )
 
     monkeypatch.setattr(index_service, "configure_and_reindex", fake_configure)
     task = FakeTask()
-    result = index_service.run_index_build([r"C:\", r"D:\"], task)
+    result = index_service.run_index_build(["C:\\", "D:\\"], task)
 
-    assert captured["roots"] == [r"C:\", r"D:\"]
+    assert captured["roots"] == ["C:\\", "D:\\"]
     assert captured["backup_root"] == r"H:\FileCheckBackup"
-    assert result.selected_roots == [r"C:\", r"D:\"]
+    assert captured["additional"] == [r"I:\FileCheckBackup"]
+    assert result.selected_roots == ["C:\\", "D:\\"]
     elapsed_updates = [(value, message) for value, message in task.progress if "已运行" in message]
     assert elapsed_updates
     assert all(value is None for value, _message in elapsed_updates)
