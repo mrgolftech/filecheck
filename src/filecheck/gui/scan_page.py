@@ -141,7 +141,7 @@ class ScanPage(ctk.CTkFrame):
     def set_context(self, scan_info, index_info) -> None:
         current = set(str(value).lower() for value in index_info.selected_roots)
         self._settings_ready = bool(index_info.backup_root)
-        self._index_ready = bool(index_info.selected_roots) and self._settings_ready
+        self._index_ready = bool(index_info.ready)
         for widget in self._drive_checks:
             widget.destroy()
         self._drive_checks = []
@@ -190,6 +190,18 @@ class ScanPage(ctk.CTkFrame):
                 text_color=Palette.TEXT_SECONDARY,
             )
             self.progress_label.configure(text="索引已就绪，可以开始扫描", text_color=Palette.SUCCESS)
+        elif index_info.selected_roots:
+            self.index_state.set_tone("danger", "索引未可靠落盘")
+            issue = index_info.database_issue or "索引数据库不可用"
+            self.index_detail.configure(
+                text=(
+                    f"检测到旧/失败的索引状态，但当前数据库不可用：{issue}\n"
+                    f"预期数据库：{index_info.database_path}\n"
+                    "请重新点击“创建 / 更新索引”。在数据库确认写盘前不会开放扫描。"
+                ),
+                text_color=Palette.DANGER,
+            )
+            self.progress_label.configure(text="索引需要重新创建并确认写盘", text_color=Palette.DANGER)
         else:
             self.index_state.set_tone("warning", "需要创建索引")
             self.index_detail.configure(
@@ -215,6 +227,7 @@ class ScanPage(ctk.CTkFrame):
         return [root for root, var in self._drive_vars.items() if bool(var.get())]
 
     def begin_index(self) -> None:
+        self._index_ready = False
         self._begin("正在创建 FileCheck 专用索引……")
         self.append_log("索引任务已启动。NTFS 快速索引需要管理员权限。")
 
@@ -224,7 +237,7 @@ class ScanPage(ctk.CTkFrame):
         self.progress_bar.stop()
         self.progress_bar.configure(mode="determinate")
         self.progress_bar.set(1.0)
-        self.progress_label.configure(text="索引创建完成，可以开始扫描", text_color=Palette.SUCCESS)
+        self.progress_label.configure(text="索引创建并写盘完成，可以开始扫描", text_color=Palette.SUCCESS)
         self.index_state.set_tone("success", "索引已就绪")
         self.index_detail.configure(text=f"当前索引范围：{'、'.join(result.selected_roots)}\n索引数据库：{result.database_path}", text_color=Palette.TEXT_SECONDARY)
         self._refresh_controls()
@@ -255,6 +268,8 @@ class ScanPage(ctk.CTkFrame):
 
     def finish_error(self, message: str) -> None:
         self._busy = False
+        self._index_ready = False
+        self.index_state.set_tone("danger", "索引不可用")
         self.progress_bar.stop()
         self.progress_bar.configure(mode="determinate")
         self.progress_bar.set(0)
@@ -264,11 +279,13 @@ class ScanPage(ctk.CTkFrame):
 
     def finish_cancelled(self) -> None:
         self._busy = False
+        self._index_ready = False
+        self.index_state.set_tone("warning", "索引未完成")
         self.progress_bar.stop()
         self.progress_bar.configure(mode="determinate")
         self.progress_bar.set(0)
-        self.progress_label.configure(text="任务已取消", text_color=Palette.WARNING)
-        self.append_log("取消请求已生效。")
+        self.progress_label.configure(text="任务已取消；请重新创建索引", text_color=Palette.WARNING)
+        self.append_log("取消请求已生效；未完成的索引不会被当作可扫描状态。")
         self._refresh_controls()
 
     def append_log(self, message: str) -> None:
