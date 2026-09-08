@@ -140,7 +140,7 @@ class ScanPage(ctk.CTkFrame):
 
     def set_context(self, scan_info, index_info) -> None:
         current = set(str(value).lower() for value in index_info.selected_roots)
-        self._settings_ready = bool(index_info.backup_roots)
+        self._settings_ready = bool(index_info.backup_root)
         self._index_ready = bool(index_info.selected_roots) and self._settings_ready
         for widget in self._drive_checks:
             widget.destroy()
@@ -175,17 +175,17 @@ class ScanPage(ctk.CTkFrame):
         if not self._settings_ready:
             self.index_state.set_tone("warning", "先完成设置")
             self.index_detail.configure(
-                text="尚未在“设置”中配置备份目录。请先设置至少一个备份目录，之后才能创建索引和扫描。",
+                text="尚未在“设置”中配置统一备份根目录。请先完成设置，之后才能创建索引和扫描。",
                 text_color=Palette.WARNING,
             )
-            self.progress_label.configure(text="等待设置备份目录", text_color=Palette.WARNING)
+            self.progress_label.configure(text="等待设置备份根目录", text_color=Palette.WARNING)
         elif self._index_ready:
             self.index_state.set_tone("success", "索引已就绪")
             self.index_detail.configure(
                 text=(
                     f"当前索引范围：{'、'.join(index_info.selected_roots)}    模式：{index_info.index_mode}\n"
                     f"索引数据库：{index_info.database_path or '-'}\n"
-                    f"备份目录排除：{'、'.join(index_info.backup_roots)}"
+                    f"备份目录排除：{index_info.backup_root}"
                 ),
                 text_color=Palette.TEXT_SECONDARY,
             )
@@ -193,7 +193,7 @@ class ScanPage(ctk.CTkFrame):
         else:
             self.index_state.set_tone("warning", "需要创建索引")
             self.index_detail.configure(
-                text=f"尚未建立 FileCheck 专用索引。备份目录排除：{'、'.join(index_info.backup_roots)}",
+                text=f"尚未建立 FileCheck 专用索引。备份目录排除：{index_info.backup_root}",
                 text_color=Palette.WARNING,
             )
             self.progress_label.configure(text="等待创建索引", text_color=Palette.TEXT_SECONDARY)
