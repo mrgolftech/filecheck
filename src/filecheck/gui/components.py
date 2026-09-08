@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import tkinter as tk
 from typing import Callable, Optional
 
 import customtkinter as ctk
@@ -193,3 +194,88 @@ class EmptyState(Card):
             font=Typography.BODY,
             justify="center",
         ).grid(row=1, column=0, pady=(0, Spacing.XL), padx=Layout.CARD_PADDING)
+
+
+class DangerConfirmDialog(ctk.CTkToplevel):
+    """Modal high-risk confirmation requiring an exact confirmation phrase."""
+
+    def __init__(self, master, title: str, message: str, phrase: str = "DELETE"):
+        super().__init__(master)
+        self.title(title)
+        self.geometry("520x320")
+        self.resizable(False, False)
+        self.configure(fg_color=Palette.BG)
+        self.transient(master)
+        self.grab_set()
+        self.protocol("WM_DELETE_WINDOW", self._cancel)
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(0, weight=1)
+        self._phrase = phrase
+        self._approved = False
+        self._value = tk.StringVar(value="")
+        self._value.trace_add("write", self._refresh_confirm_state)
+
+        card = Card(self)
+        card.grid(row=0, column=0, sticky="nsew", padx=Spacing.LG, pady=Spacing.LG)
+        card.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(
+            card,
+            text=title,
+            text_color=Palette.DANGER,
+            font=Typography.SECTION_TITLE,
+            anchor="w",
+        ).grid(row=0, column=0, sticky="ew", padx=Layout.CARD_PADDING, pady=(Layout.CARD_PADDING, Spacing.SM))
+        ctk.CTkLabel(
+            card,
+            text=message,
+            text_color=Palette.TEXT_SECONDARY,
+            font=Typography.BODY,
+            anchor="w",
+            justify="left",
+            wraplength=430,
+        ).grid(row=1, column=0, sticky="ew", padx=Layout.CARD_PADDING)
+        ctk.CTkLabel(
+            card,
+            text=f"请输入 {phrase} 以确认：",
+            text_color=Palette.TEXT,
+            font=Typography.BODY_MEDIUM,
+            anchor="w",
+        ).grid(row=2, column=0, sticky="ew", padx=Layout.CARD_PADDING, pady=(Spacing.LG, Spacing.XS))
+        self.entry = ctk.CTkEntry(
+            card,
+            textvariable=self._value,
+            height=Layout.CONTROL_HEIGHT,
+            corner_radius=Radius.CONTROL,
+            border_color=Palette.BORDER,
+            fg_color=Palette.SURFACE,
+            text_color=Palette.TEXT,
+            font=Typography.BODY,
+        )
+        self.entry.grid(row=3, column=0, sticky="ew", padx=Layout.CARD_PADDING)
+        actions = ctk.CTkFrame(card, fg_color="transparent")
+        actions.grid(row=4, column=0, sticky="e", padx=Layout.CARD_PADDING, pady=Layout.CARD_PADDING)
+        SecondaryButton(actions, "取消", command=self._cancel, width=100).pack(side="left")
+        self.confirm_button = DangerButton(actions, "确认删除", command=self._approve, width=120, state="disabled")
+        self.confirm_button.pack(side="left", padx=(Spacing.SM, 0))
+        self.after(50, self._focus_entry)
+
+    def _focus_entry(self) -> None:
+        self.entry.focus_set()
+
+    def _refresh_confirm_state(self, *args) -> None:
+        state = "normal" if self._value.get().strip() == self._phrase else "disabled"
+        self.confirm_button.configure(state=state)
+
+    def _approve(self) -> None:
+        if self._value.get().strip() != self._phrase:
+            return
+        self._approved = True
+        self.destroy()
+
+    def _cancel(self) -> None:
+        self._approved = False
+        self.destroy()
+
+    def show(self) -> bool:
+        self.wait_window()
+        return self._approved
