@@ -107,6 +107,7 @@ class BackupBatchSelector(Card):
                         chosen = batch
                         break
 
+        previous_path = self._current_path
         names = [batch.name for batch in batches]
         self.menu.configure(values=names, state="normal" if len(names) > 1 else "disabled")
         self.menu.set(chosen.name)
@@ -119,7 +120,7 @@ class BackupBatchSelector(Card):
             self.state.set_tone("success", "1 个批次")
             self.description.configure(text="发现 1 个有效备份批次，已自动选择。")
 
-        if auto_load:
+        if auto_load and (previous_path is None or previous_path != chosen.path):
             self._on_select(str(chosen.path))
         return str(chosen.path)
 
@@ -143,6 +144,11 @@ def attach_backup_batch_selector(page, on_select: Callable[[str], None]) -> Back
             continue
         if row >= 1:
             child.grid_configure(row=row + 1)
+
+    # Existing pages use row 3 as the growing execution card.  After inserting
+    # the selector it moves to row 4, so move the grid weight with it.
+    page.grid_rowconfigure(3, weight=0)
+    page.grid_rowconfigure(4, weight=1)
 
     selector = BackupBatchSelector(page, on_select)
     selector.grid(row=1, column=0, sticky="ew", pady=(Spacing.LG, 0))
