@@ -50,7 +50,7 @@ class HomePage(ctk.CTkFrame):
             font=Typography.BODY,
             anchor="w",
             justify="left",
-            wraplength=860,
+            wraplength=620,
         ).grid(row=1, column=0, sticky="ew", padx=Layout.CARD_PADDING)
         ctk.CTkLabel(
             prep,
@@ -59,7 +59,7 @@ class HomePage(ctk.CTkFrame):
             font=Typography.SMALL,
             anchor="w",
             justify="left",
-            wraplength=860,
+            wraplength=620,
         ).grid(row=2, column=0, sticky="ew", padx=Layout.CARD_PADDING, pady=(Spacing.SM, Layout.CARD_PADDING))
 
         shortcuts = Card(self)
@@ -81,7 +81,7 @@ class HomePage(ctk.CTkFrame):
                 font=Typography.CAPTION,
                 anchor="w",
                 justify="left",
-                wraplength=240,
+                wraplength=180,
             ).pack(anchor="w", pady=(Spacing.XS, 0))
             SecondaryButton(cell, f"进入{title}", command=lambda name=target: self._on_navigate(name), width=110).pack(
                 anchor="w", pady=(Spacing.MD, 0)
@@ -100,7 +100,7 @@ class HomePage(ctk.CTkFrame):
             font=Typography.CAPTION,
             anchor="w",
             justify="left",
-            wraplength=860,
+            wraplength=620,
         )
         self.state_label.grid(row=1, column=0, sticky="ew", padx=Layout.CARD_PADDING, pady=(0, Layout.CARD_PADDING))
 
