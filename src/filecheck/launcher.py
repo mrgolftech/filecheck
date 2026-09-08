@@ -13,6 +13,7 @@ from . import menu_layout
 from . import resilient_cli
 from . import restore_reporting
 from . import resume_ui
+from . import scan_ui
 
 
 # Install the Everything database-path/persistence fix before routing commands.
@@ -42,6 +43,10 @@ deletion_runtime.install()
 # share one workflow entry; diagnostics/selftest and advanced CLI help remain
 # available as command-line subcommands rather than menu entries.
 menu_layout.install()
+
+# Before an interactive scan, show the effective keyword groups, extensions,
+# and the exact config\rules.json path so users can review or edit the rules.
+scan_ui.install()
 
 # A blank ENTER at the top-level menu must not silently choose item 1. Rebuild
 # is destructive to the current in-memory index state and can take noticeable
