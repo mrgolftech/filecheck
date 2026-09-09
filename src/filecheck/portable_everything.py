@@ -20,6 +20,9 @@ class PortableEverythingError(EverythingError):
     pass
 
 
+_INDEX_POLICY_VERSION = 2
+
+
 @dataclass(frozen=True)
 class DriveInfo:
     root: str
@@ -223,8 +226,8 @@ def _write_ini(
         "auto_remove_offline_ntfs_volumes=0",
         "auto_remove_moved_ntfs_volumes=0",
         "exclude_list_enabled=1",
-        "exclude_hidden_files_and_folders=1",
-        "exclude_system_files_and_folders=1",
+        "exclude_hidden_files_and_folders=0",
+        "exclude_system_files_and_folders=0",
         f"exclude_folders={_ini_list(excluded_roots)}",
         f"ntfs_volume_guids={_ini_quoted_list([''] * ntfs_count)}",
         f"ntfs_volume_paths={_ini_quoted_list(ntfs_paths)}",
@@ -362,6 +365,9 @@ def configure_and_reindex(
 
     state = {
         "schema_version": 1,
+        "index_policy_version": _INDEX_POLICY_VERSION,
+        "include_hidden_files_and_folders": True,
+        "include_system_files_and_folders": True,
         "updated_at": now_iso(),
         "instance": FILECHECK_INSTANCE,
         "index_mode": index_mode,
@@ -402,6 +408,13 @@ def load_index_state(*, required: bool = True) -> dict | None:
         raise PortableEverythingError(f"索引状态文件损坏: {path}") from exc
     if payload.get("schema_version") != 1:
         raise PortableEverythingError("不支持的索引状态版本")
+    upgrade_required = payload.get("index_policy_version") != _INDEX_POLICY_VERSION
+    payload["index_policy_upgrade_required"] = upgrade_required
+    if required and upgrade_required:
+        raise PortableEverythingError(
+            "FileCheck 索引策略已升级：隐藏文件、隐藏目录以及 System 属性文件/目录现在必须纳入索引。"
+            "请先重新建立/更新索引，再执行扫描。"
+        )
     return payload
 
 

@@ -63,9 +63,10 @@ def _read_json_object(path: Path) -> dict | None:
 def is_filecheck_backup_batch(path: str | Path) -> bool:
     """Return True only for a structurally valid FileCheck backup batch.
 
-    New batches carry a .filecheck-backup marker so they remain identifiable even
-    after the user moves or renames the directory.  Legacy batches without the
-    marker are accepted when the directory name still matches manifest.batch_id.
+    New batches carry a .filecheck-backup marker, but backup identity never
+    depends on the outer directory name. Legacy batches without the marker are
+    recognized from their validated FileCheck manifest + files/ structure, so
+    moving or renaming an old backup cannot make it ordinary source data.
     File payloads are intentionally not hashed here; this is an identity/safety
     check, not a backup-integrity verification pass.
     """
@@ -89,18 +90,17 @@ def is_filecheck_backup_batch(path: str | Path) -> bool:
         marker_path = batch_dir / _BACKUP_MARKER
         if marker_path.is_file():
             marker = _read_json_object(marker_path)
-            if marker is None:
-                return False
-            return bool(
+            if marker is not None and bool(
                 marker.get("format") == _BACKUP_MARKER_FORMAT
                 and marker.get("version") == _BACKUP_MARKER_VERSION
                 and str(marker.get("batch_id") or "") == batch_id
-            )
+            ):
+                return True
+            # A missing/corrupt/mismatched marker must not downgrade a valid
+            # FileCheck manifest into ordinary user data. Structural identity
+            # remains the conservative safety fallback.
 
-        # v0.2.1 and earlier did not have a marker.  Requiring the original
-        # batch directory name prevents arbitrary folders with a manifest-like
-        # JSON file from being classified as protected backups.
-        return batch_dir.name == batch_id
+        return True
     except OSError:
         return False
 
