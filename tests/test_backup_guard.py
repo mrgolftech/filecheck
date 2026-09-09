@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import filecheck.backup as backup_mod
 import filecheck.gui.scan_service as scan_service
 from filecheck import deletion_runtime
 from filecheck.backup import (
@@ -30,11 +31,6 @@ class FakeTask:
 
     def raise_if_cancelled(self) -> None:
         return None
-
-
-def _stored_file(batch: Path) -> Path:
-    manifest = read_backup_manifest(batch)
-    return batch / Path(str(manifest["items"][0]["backup_path"]).replace("/", Path("x").anchor or "/"))
 
 
 def _stored_path(batch: Path) -> Path:
@@ -103,7 +99,12 @@ def test_core_backup_rejects_file_from_historical_backup(tmp_path: Path) -> None
     assert is_filecheck_backup_batch(old_batch)
 
 
-def test_core_backup_rejects_directory_containing_nested_backup(tmp_path: Path) -> None:
+def test_core_backup_rejects_directory_containing_nested_backup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # This test targets nested-backup protection, not the independent Win7
+    # 240-character safety gate. GitHub's Windows temp path is already very deep.
+    monkeypatch.setattr(backup_mod, "_is_windows", lambda: False)
     root = tmp_path / "mixed-source"
     normal = root / "normal.txt"
     normal.parent.mkdir(parents=True)
@@ -121,6 +122,7 @@ def test_core_backup_rejects_directory_containing_nested_backup(tmp_path: Path) 
 
 
 def test_scan_filters_old_backup_after_backup_root_changes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(backup_mod, "_is_windows", lambda: False)
     rules_path = tmp_path / "rules.json"
     rules_path.write_text(
         json.dumps({"keywords": {"high": ["机密"]}, "extensions": ["txt"]}, ensure_ascii=False),
@@ -184,7 +186,10 @@ def test_scan_filters_old_backup_after_backup_root_changes(tmp_path: Path, monke
     assert any("自动排除 1 个" in line for line in task.logs)
 
 
-def test_delete_preflight_refuses_nested_backup_source(tmp_path: Path) -> None:
+def test_delete_preflight_refuses_nested_backup_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(backup_mod, "_is_windows", lambda: False)
     _, old_batch, old_stored = _make_backup(tmp_path, payload=b"same-payload")
 
     seed = tmp_path / "second-seed.txt"
