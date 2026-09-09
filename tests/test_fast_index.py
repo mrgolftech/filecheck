@@ -50,8 +50,8 @@ def test_write_ini_uses_ntfs_volume_keys_and_folder_fallback(tmp_path: Path, mon
     assert 'ntfs_volume_monitors=1' in text
     assert 'folders=E:\\' in text
     assert 'auto_include_fixed_volumes=0' in text
-    assert 'exclude_hidden_files_and_folders=1' in text
-    assert 'exclude_system_files_and_folders=1' in text
+    assert 'exclude_hidden_files_and_folders=0' in text
+    assert 'exclude_system_files_and_folders=0' in text
     assert 'run_in_background=1' in text
     assert 'ipc=1' in text
     assert 'db_location=' not in text
