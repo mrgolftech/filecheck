@@ -5,7 +5,7 @@ import stat
 from pathlib import Path
 
 from . import migration as base
-from .backup import verify_backup
+from .backup import find_containing_backup_batch, verify_backup
 from .util import now_iso, read_json, sha256_file
 
 
@@ -39,8 +39,18 @@ def _snapshot_changed(current: dict[str, int], expected: dict[str, int]) -> bool
     return False
 
 
+def _protected_backup_reason(source: Path) -> str | None:
+    batch = find_containing_backup_batch(source)
+    if batch is None:
+        return None
+    return f"源文件位于 FileCheck 历史备份中，禁止作为普通源文件删除；所属备份批次: {batch}"
+
+
 def _check_source_and_snapshot(item: dict) -> tuple[bool, str | None, dict[str, int] | None]:
     source = Path(item["source_path"])
+    protected_reason = _protected_backup_reason(source)
+    if protected_reason is not None:
+        return False, protected_reason, None
     try:
         if source.is_symlink():
             return False, "源路径已变成符号链接/重解析入口", None
@@ -169,6 +179,11 @@ _unlink_with_readonly_retry = _unlink_ignoring_readonly
 
 def _remove_one_fast(row: dict, snapshot: dict[str, int]) -> None:
     source = Path(row["source_path"])
+    protected_reason = _protected_backup_reason(source)
+    if protected_reason is not None:
+        row["state"] = "failed"
+        row["error"] = protected_reason
+        return
     try:
         if not base._entry_exists(source):
             row["state"] = "already_absent"
@@ -187,6 +202,10 @@ def _remove_one_fast(row: dict, snapshot: dict[str, int]) -> None:
             row["error"] = "源文件在整批 SHA-256 复核通过后发生变化，已跳过"
             return
         _unlink_ignoring_readonly(source)
+        if base._entry_exists(source):
+            row["state"] = "failed"
+            row["error"] = "删除调用返回后源路径仍然存在，未确认删除成功"
+            return
     except FileNotFoundError:
         row["state"] = "already_absent"
         row["error"] = None
@@ -239,6 +258,11 @@ def remove_verified_sources(
 
 def _remove_one_verified(row: dict, manifest_item: dict) -> None:
     source = Path(row["source_path"])
+    protected_reason = _protected_backup_reason(source)
+    if protected_reason is not None:
+        row["state"] = "failed"
+        row["error"] = protected_reason
+        return
     ok, reason = base._check_source_item(manifest_item)
     if not ok:
         if not base._entry_exists(source):
@@ -250,6 +274,10 @@ def _remove_one_verified(row: dict, manifest_item: dict) -> None:
         return
     try:
         _unlink_ignoring_readonly(source)
+        if base._entry_exists(source):
+            row["state"] = "failed"
+            row["error"] = "删除调用返回后源路径仍然存在，未确认删除成功"
+            return
     except FileNotFoundError:
         row["state"] = "already_absent"
         row["error"] = None
@@ -291,7 +319,11 @@ def resume_migration(state_path: str | Path, *, progress=None, checkpoint_every:
     every = max(1, int(checkpoint_every))
     for index, row in enumerate(retry_rows, start=1):
         source = Path(row["source_path"])
-        if not base._entry_exists(source):
+        protected_reason = _protected_backup_reason(source)
+        if protected_reason is not None:
+            row["state"] = "failed"
+            row["error"] = protected_reason
+        elif not base._entry_exists(source):
             row["state"] = "already_absent"
             row["error"] = None
         else:
