@@ -26,6 +26,9 @@ _WINDOWS_SAFE_PATH_CHARS = 240
 _COMPACT_STORAGE_DIR = "_long"
 _COMPACT_HASH_HEX = 64
 _TEMP_PLACEHOLDER = ".fc-b-0000000000000000.part"
+_BACKUP_MARKER = ".filecheck-backup"
+_BACKUP_MARKER_FORMAT = "filecheck-backup"
+_BACKUP_MARKER_VERSION = 1
 
 
 def _notify(progress: ProgressCallback | None, stage: str, current: int, total: int, path: str | Path) -> None:
@@ -45,15 +48,135 @@ def _is_within(child: Path, parent: Path) -> bool:
         return False
 
 
+def _path_cache_key(path: Path) -> str:
+    return os.path.normcase(os.path.abspath(str(path)))
+
+
+def _read_json_object(path: Path) -> dict | None:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def is_filecheck_backup_batch(path: str | Path) -> bool:
+    """Return True only for a structurally valid FileCheck backup batch.
+
+    New batches carry a .filecheck-backup marker so they remain identifiable even
+    after the user moves or renames the directory.  Legacy batches without the
+    marker are accepted when the directory name still matches manifest.batch_id.
+    File payloads are intentionally not hashed here; this is an identity/safety
+    check, not a backup-integrity verification pass.
+    """
+    batch_dir = Path(path).expanduser()
+    try:
+        if not batch_dir.is_dir():
+            return False
+        manifest = _read_json_object(batch_dir / "manifest.json")
+        if manifest is None:
+            return False
+        try:
+            _validate_manifest(manifest)
+        except BackupError:
+            return False
+        batch_id = str(manifest.get("batch_id") or "")
+        if not batch_id.startswith("FC-"):
+            return False
+        if not (batch_dir / "files").is_dir():
+            return False
+
+        marker_path = batch_dir / _BACKUP_MARKER
+        if marker_path.is_file():
+            marker = _read_json_object(marker_path)
+            if marker is None:
+                return False
+            return bool(
+                marker.get("format") == _BACKUP_MARKER_FORMAT
+                and marker.get("version") == _BACKUP_MARKER_VERSION
+                and str(marker.get("batch_id") or "") == batch_id
+            )
+
+        # v0.2.1 and earlier did not have a marker.  Requiring the original
+        # batch directory name prevents arbitrary folders with a manifest-like
+        # JSON file from being classified as protected backups.
+        return batch_dir.name == batch_id
+    except OSError:
+        return False
+
+
+def find_containing_backup_batch(
+    path: str | Path,
+    *,
+    cache: dict[str, Path | None] | None = None,
+) -> Path | None:
+    """Find the nearest FileCheck backup batch containing path, if any.
+
+    The optional cache is useful when screening thousands of Everything results
+    that share parent directories.  Missing paths are supported so restore or
+    deletion preflight can still classify their existing ancestor batch.
+    """
+    raw = Path(path).expanduser()
+    try:
+        current = raw if raw.is_dir() else raw.parent
+    except OSError:
+        current = raw.parent
+
+    visited: list[Path] = []
+    for ancestor in (current, *current.parents):
+        key = _path_cache_key(ancestor)
+        if cache is not None and key in cache:
+            cached = cache[key]
+            if cached is not None:
+                for seen in visited:
+                    cache[_path_cache_key(seen)] = cached
+                return cached
+            visited.append(ancestor)
+            continue
+
+        if is_filecheck_backup_batch(ancestor):
+            resolved = ancestor
+            try:
+                resolved = ancestor.resolve()
+            except OSError:
+                pass
+            if cache is not None:
+                cache[key] = resolved
+                for seen in visited:
+                    cache[_path_cache_key(seen)] = resolved
+            return resolved
+
+        if cache is not None:
+            cache[key] = None
+        visited.append(ancestor)
+    return None
+
+
+def _reject_protected_backup_source(path: Path) -> None:
+    batch = find_containing_backup_batch(path)
+    if batch is not None:
+        raise BackupError(
+            "检测到待备份文件位于 FileCheck 历史备份中。为防止备份嵌套和历史备份被再次搬移，"
+            f"本次已拒绝继续: {path}；所属备份批次: {batch}"
+        )
+
+
 def _collect_files(sources: Iterable[str | Path], destination_root: Path) -> list[Path]:
     files: list[Path] = []
     seen: set[str] = set()
+    guard_cache: dict[str, Path | None] = {}
     for raw in sources:
         source = Path(raw).expanduser()
         if not source.exists():
             raise BackupError(f"源路径不存在: {source}")
         if source.is_symlink():
             raise BackupError(f"不处理符号链接/重解析入口: {source}")
+        protected = find_containing_backup_batch(source, cache=guard_cache)
+        if protected is not None:
+            raise BackupError(
+                "检测到待备份路径位于 FileCheck 历史备份中。为防止备份嵌套和历史备份被再次搬移，"
+                f"本次已拒绝继续: {source}；所属备份批次: {protected}"
+            )
         if source.is_dir() and _is_within(destination_root, source):
             raise BackupError(f"备份目标不能位于待备份源目录内部: {source}")
         if source.is_file():
@@ -63,6 +186,12 @@ def _collect_files(sources: Iterable[str | Path], destination_root: Path) -> lis
         else:
             continue
         for candidate in candidates:
+            protected = find_containing_backup_batch(candidate, cache=guard_cache)
+            if protected is not None:
+                raise BackupError(
+                    "待备份目录中包含 FileCheck 历史备份。为避免把历史备份再次作为普通源文件处理，"
+                    f"本次未创建任何新备份: {candidate}；所属备份批次: {protected}"
+                )
             key = os.path.normcase(os.path.abspath(str(candidate)))
             if key not in seen:
                 seen.add(key)
@@ -366,6 +495,14 @@ def create_backup(
             )
             _notify(progress, "copy", index, total, source)
         write_json(staging / "manifest.json", manifest)
+        write_json(
+            staging / _BACKUP_MARKER,
+            {
+                "format": _BACKUP_MARKER_FORMAT,
+                "version": _BACKUP_MARKER_VERSION,
+                "batch_id": batch_id,
+            },
+        )
         verify_backup(staging, progress=progress)
         os.replace(staging, final_dir)
         completed = True

@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List
 
-from filecheck import cli, db_persistence
+from filecheck import backup, cli, db_persistence
 from filecheck.everything import FILECHECK_INSTANCE, scan_keywords
 from filecheck.portable_everything import load_index_state
 from filecheck.util import now_iso, program_dir, write_json
@@ -69,6 +69,23 @@ def load_context() -> ScanContextInfo:
     )
 
 
+def _filter_protected_backup_items(items: List[Dict[str, Any]]) -> tuple[List[Dict[str, Any]], List[str]]:
+    kept: List[Dict[str, Any]] = []
+    protected_batches: set[str] = set()
+    cache: dict[str, Path | None] = {}
+    for item in items:
+        path_text = str(item.get("path") or "").strip()
+        if not path_text:
+            kept.append(item)
+            continue
+        batch = backup.find_containing_backup_batch(path_text, cache=cache)
+        if batch is None:
+            kept.append(item)
+        else:
+            protected_batches.add(str(batch))
+    return kept, sorted(protected_batches, key=str.lower)
+
+
 def run_scan(request: ScanRequest, task: TaskContext) -> ScanResult:
     task.log("正在读取扫描规则和专用索引状态……")
     rules_path = Path(cli._default_rules_path()).expanduser().resolve()
@@ -89,7 +106,8 @@ def run_scan(request: ScanRequest, task: TaskContext) -> ScanResult:
 
     task.log("索引范围: " + "、".join(selected_roots))
     task.log("本次扫描范围: 全部已索引磁盘")
-    task.log(f"备份目录排除: {backup_root}")
+    task.log(f"当前备份目录排除: {backup_root}")
+    task.log("历史 FileCheck 备份即使已搬移或更换备份根目录，也会在候选结果阶段自动识别并排除。")
     task.log(f"规则文件: {rules_path}")
     task.set_progress(None, "正在连接 FileCheck 专用 Everything 实例……")
 
@@ -98,7 +116,7 @@ def run_scan(request: ScanRequest, task: TaskContext) -> ScanResult:
     task.log(f"Everything {status.everything_version} / ES {status.es_version}")
     task.set_progress(None, "正在按关键词查询专用索引……")
 
-    items = scan_keywords(
+    raw_items = scan_keywords(
         rules["keywords"],
         rules["extensions"],
         max_results_per_keyword=int(rules.get("max_results_per_keyword", 100000)),
@@ -108,7 +126,19 @@ def run_scan(request: ScanRequest, task: TaskContext) -> ScanResult:
         exclude_roots=exclusions,
     )
     task.raise_if_cancelled()
-    task.log(f"关键词查询完成，共发现 {len(items)} 个候选文件。")
+    items, protected_batches = _filter_protected_backup_items(list(raw_items))
+    excluded_backup_items = len(raw_items) - len(items)
+    task.log(f"关键词查询完成，共发现 {len(raw_items)} 个原始候选文件。")
+    if excluded_backup_items:
+        task.log(
+            f"已自动排除 {excluded_backup_items} 个位于历史 FileCheck 备份中的候选文件，"
+            f"涉及 {len(protected_batches)} 个备份批次。"
+        )
+        for batch_path in protected_batches[:5]:
+            task.log(f"保护的历史备份: {batch_path}")
+        if len(protected_batches) > 5:
+            task.log(f"另有 {len(protected_batches) - 5} 个历史备份批次已保护。")
+    task.log(f"最终保留 {len(items)} 个候选文件。")
     task.set_progress(0.85, "正在生成 JSON / CSV 扫描结果……")
 
     output = Path(cli._default_scan_output())
@@ -120,6 +150,8 @@ def run_scan(request: ScanRequest, task: TaskContext) -> ScanResult:
         "everything_version": status.everything_version,
         "selected_roots": selected_roots,
         "excluded_roots": exclusions,
+        "protected_backup_batches": protected_batches,
+        "excluded_backup_items": excluded_backup_items,
         "index_updated_at": state.get("updated_at"),
         "backup_root": backup_root,
         "match_path": bool(request.match_path),
