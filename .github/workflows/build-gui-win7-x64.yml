@@ -6,6 +6,7 @@ on:
     branches:
       - feat/gui-customtkinter
     paths:
+      - "README.md"
       - "src/**"
       - "config/**"
       - "packaging/**"
@@ -167,8 +168,8 @@ jobs:
           Copy-Item "dist\FileCheck-GUI.exe" "$pkg\FileCheck-GUI.exe" -Force
           Copy-Item "dist\FileCheck-GUI-runtime\*" "$pkg\app" -Recurse -Force
           Copy-Item "dist\FileCheck.exe" "$pkg\advanced\FileCheck.exe" -Force
+          Copy-Item "README.md" "$pkg\README.md" -Force
           Copy-Item "config\rules.json" "$pkg\config\rules.json" -Force
-          Copy-Item "packaging\README-GUI-WIN7-X64.txt" "$pkg\README.txt" -Force
           Copy-Item "packaging\THIRD-PARTY-NOTICES.txt" "$pkg\THIRD-PARTY-NOTICES.txt" -Force
           $es = Get-ChildItem "es-dist" -Recurse -File -Filter "es.exe" | Select-Object -First 1
           $everything = Get-ChildItem "everything-dist" -Recurse -File -Filter "Everything.exe" | Select-Object -First 1
@@ -196,7 +197,7 @@ jobs:
         run: |
           $verifyDir = Join-Path $env:RUNNER_TEMP "filecheck-gui-win7-check"
           Expand-Archive "FileCheck-v0.1.1-gui-win7-x64.zip" -DestinationPath $verifyDir -Force
-          foreach ($relative in @("FileCheck-GUI.exe", "app\FileCheck-GUI-runtime.exe", "advanced\FileCheck.exe", "tools\es.exe", "tools\Everything.exe", "config\rules.json", "README.txt", "SHA256SUMS.txt")) {
+          foreach ($relative in @("FileCheck-GUI.exe", "app\FileCheck-GUI-runtime.exe", "advanced\FileCheck.exe", "tools\es.exe", "tools\Everything.exe", "config\rules.json", "README.md", "SHA256SUMS.txt")) {
             if (-not (Test-Path (Join-Path $verifyDir $relative))) { throw "Package file missing: $relative" }
           }
           Push-Location $env:TEMP
