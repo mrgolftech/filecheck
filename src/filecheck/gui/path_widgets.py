@@ -11,8 +11,17 @@ from .components import SecondaryButton
 from .tokens import Palette, Spacing, Typography
 
 
+def _is_windows() -> bool:
+    return os.name == "nt"
+
+
 def reveal_path(value: str) -> None:
-    """Open the containing folder for a file/directory and select the file on Windows when possible."""
+    """Open the exact containing folder for a file, or the directory itself.
+
+    The UI action is deliberately named “打开位置”, so opening the containing
+    directory is more reliable than Explorer's /select parsing, especially for
+    Chinese/long paths and state files such as source-removal.json on Win7.
+    """
     text = str(value or "").strip()
     if not text:
         return
@@ -22,25 +31,17 @@ def reveal_path(value: str) -> None:
     except (OSError, RuntimeError):
         pass
 
-    if os.name == "nt":
+    folder = path if path.is_dir() else path.parent
+    if _is_windows():
         try:
-            if path.exists() and path.is_file():
-                creationflags = int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
-                subprocess.Popen(
-                    ["explorer.exe", f"/select,{path}"],
-                    creationflags=creationflags,
-                )
-                return
-            folder = path if path.is_dir() else path.parent
             if folder.exists():
                 os.startfile(str(folder))  # type: ignore[attr-defined]
-                return
         except (OSError, ValueError):
-            return
+            pass
+        return
 
-    folder = path if path.is_dir() else path.parent
     try:
-        if os.name == "posix":
+        if folder.exists() and os.name == "posix":
             command = ["open", str(folder)] if os.uname().sysname == "Darwin" else ["xdg-open", str(folder)]
             subprocess.Popen(command)
     except (AttributeError, OSError, ValueError):
