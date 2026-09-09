@@ -2,7 +2,7 @@
 
 FileCheck 是一个面向 Windows 终端的离线文件自查、备份与恢复工具，用于完成：**快速索引 → 关键词扫描 → 人工核对 → 批量目录备份 → 完整性验证 → 源文件安全删除 → 按原路径恢复**。
 
-当前正式版本：**v0.2.1**。
+当前正式版本：**v0.2.2**。
 
 FileCheck 同时提供 **GUI 图形界面** 和 **CLI 命令行**。两种入口共用同一套核心逻辑、扫描规则、Everything 专用索引、备份格式和 SHA-256 校验机制。
 
@@ -10,42 +10,35 @@ FileCheck 同时提供 **GUI 图形界面** 和 **CLI 命令行**。两种入口
 >
 > `scan` 和 `backup` 永远不会自动删除源文件。关键词命中只表示“候选”，不代表违规或最终分类结论。
 
-## v0.2.1 发布包
+## v0.2.2 发布包
 
 正式 Release 提供 3 个便携包：
 
-- `FileCheck-v0.2.1-gui-x64.zip`：GUI 完整版，面向 Windows 7 SP1 / Windows 10 / Windows 11 64 位，**普通用户推荐**；包内同时包含 x64 CLI。
-- `FileCheck-v0.2.1-cli-x64.zip`：纯命令行版，面向 Windows 7 SP1 / Windows 10 / Windows 11 64 位。
-- `FileCheck-v0.2.1-cli-x86.zip`：纯命令行兼容版，面向 Windows 7 SP1 32 位。
+- `FileCheck-v0.2.2-gui-x64.zip`：GUI 完整版，面向 Windows 7 SP1 / Windows 10 / Windows 11 64 位，**普通用户推荐**；包内同时包含 x64 CLI。
+- `FileCheck-v0.2.2-cli-x64.zip`：纯命令行版，面向 Windows 7 SP1 / Windows 10 / Windows 11 64 位。
+- `FileCheck-v0.2.2-cli-x86.zip`：纯命令行兼容版，面向 Windows 7 SP1 32 位。
 
 所有便携包均内置对应架构的 Everything 和 ES，解压后即可运行，不需要安装 Python，也不要求系统预先安装 Everything。
 
 > GUI/x64 CLI 使用 Python 3.8.10 x64 + PyInstaller 5.13.2 的 Windows 7 兼容构建基线；x86 CLI 使用 Python 3.8.10 x86 + PyInstaller 5.13.2。CI 会执行 Python 3.8 兼容、完整回归、现代 Windows GUI 构造、EXE smoke test 和最终 ZIP 校验。正式部署到具体 Windows 7 机器前，仍建议在目标环境做一次实际运行验证。
 
-## v0.2.1 修复说明
+## v0.2.2 修复说明
 
-v0.2.0 在深层目录备份时，原子复制临时文件会重复原文件名并附加 UUID。某些正式目标路径本身低于传统 Windows `MAX_PATH`，但临时文件路径可能被额外推到 260 字符附近，在 Windows 7 上表现为：
+v0.2.2 重点修复历史 FileCheck 备份在用户切换备份根目录、移动或重命名备份批次后，仍可能被 Everything 再次命中并进入“扫描 → 再次备份 → 源文件删除”链路的问题。
 
-```text
-[Errno 2] No such file or directory
-```
+新版本为新备份批次增加 `.filecheck-backup` 身份标记，同时保留对旧版 `manifest.json + batch_id + files` 结构的兼容识别。即使历史备份已经不在当前配置的 backup root 中，扫描结果阶段仍会自动过滤其中的候选文件；核心备份入口和源文件删除阶段还会再次执行独立硬保护。
 
-v0.2.1 将备份和恢复临时文件改为固定长度短名称，例如：
+删除逻辑也增加了“删除调用返回后再次确认路径确实不存在”的检查，避免文件实际仍存在时被误报为 `deleted`。
 
-```text
-.fc-b-65738f732c5e459e.part
-.fc-r-0123456789abcdef.part
-```
-
-临时文件仍位于最终目标同一目录，因此原子替换、异常清理和 SHA-256 校验逻辑不变。已有 v0.2.0 备份批次无需迁移。
+v0.2.1 的 Windows 7 深层目录紧凑存储和短原子临时文件机制继续保留，已有 v0.2.0 / v0.2.1 备份无需迁移。
 
 ## 选择哪个版本
 
 | 使用场景 | 推荐包 |
 | --- | --- |
-| 日常人工操作、希望使用图形界面 | `FileCheck-v0.2.1-gui-x64.zip` |
-| 64 位 Windows 上脚本化、批处理或高级诊断 | `FileCheck-v0.2.1-cli-x64.zip` |
-| Windows 7 SP1 32 位旧机器 | `FileCheck-v0.2.1-cli-x86.zip` |
+| 日常人工操作、希望使用图形界面 | `FileCheck-v0.2.2-gui-x64.zip` |
+| 64 位 Windows 上脚本化、批处理或高级诊断 | `FileCheck-v0.2.2-cli-x64.zip` |
+| Windows 7 SP1 32 位旧机器 | `FileCheck-v0.2.2-cli-x86.zip` |
 
 GUI 包中的高级命令行入口位于：
 
@@ -73,6 +66,7 @@ scan-results\
 - **NTFS 快速索引**：本地 NTFS 固定磁盘优先使用 MFT/USN；不安装永久 Windows 服务。
 - **全部运行数据本地化**：配置、索引、操作状态和扫描结果都保存在 FileCheck 便携目录下。
 - **单一备份根目录**：设置一个统一备份根目录，每次备份创建独立 `FC-YYYYMMDD-HHMMSS-*` 批次。
+- **历史备份保护**：已创建的 FileCheck 备份即使被移动、重命名或不再位于当前备份根目录，也会在扫描、再次备份和源文件删除阶段受到保护。
 - **目录备份**：按原始盘符和目录结构镜像保存，不创建新的 ZIP 备份。
 - **同名文件安全**：不同绝对路径下的同名文件保持各自目录结构，不会互相覆盖。
 - **SHA-256 完整性保护**：备份、删除前复核和恢复均使用 SHA-256 验证。
@@ -165,21 +159,23 @@ H:\FileCheckBackup
 ```text
 H:\FileCheckBackup\
 ├─ FC-20260909-090000-xxxxxxxx\
+│  ├─ .filecheck-backup
 │  ├─ manifest.json
 │  └─ files\...
 ├─ FC-20260909-103000-yyyyyyyy\
+│  ├─ .filecheck-backup
 │  ├─ manifest.json
 │  └─ files\...
 └─ ...
 ```
 
-源文件删除和恢复页面会自动扫描这个备份根目录下的直接子目录，并识别其中存在 `manifest.json` 的有效备份批次。
+源文件删除和恢复页面会自动扫描这个备份根目录下的直接子目录，并识别其中存在 `manifest.json` 的有效备份批次。v0.2.2 还会在扫描、再次备份和删除阶段识别已经搬移的历史 FileCheck 备份，避免旧备份再次进入普通文件处理链路。
 
 ## 3. 创建 / 更新索引
 
 进入 **扫描** 页面，点击“创建 / 更新索引”。
 
-GUI 不要求用户手工设置扫描范围，按当前配置对本地固定磁盘建立 FileCheck 专用索引。程序目录和备份根目录会自动排除。
+GUI 不要求用户手工设置扫描范围，按当前配置对本地固定磁盘建立 FileCheck 专用索引。程序目录和当前备份根目录会自动排除；历史 FileCheck 备份即使位于其他位置，也会在候选结果阶段再次过滤。
 
 数据库固定保存为：
 
@@ -216,13 +212,14 @@ FileCheck 不要求逐文件确认；核对完成后可以将本次候选批量�
 
 ```text
 <backup-root>\FC-...\
+├─ .filecheck-backup
 ├─ manifest.json
 └─ files\...
 ```
 
 复制过程中使用 `.FC-....incomplete` 暂存目录。每个文件先复制到同目录短临时文件并同步落盘，再原子替换为正式备份文件。只有全部复制完成并通过大小 + SHA-256 校验后，才发布为正式 `FC-*` 批次。
 
-不同绝对路径下的同名文件会保留各自的原始目录结构，不会互相覆盖。
+不同绝对路径下的同名文件会保留各自的原始目录结构，不会互相覆盖。核心备份逻辑会拒绝把历史 FileCheck 备份中的文件或包含历史备份的目录再次作为普通源文件备份。
 
 ## 7. 源文件删除
 
@@ -236,8 +233,10 @@ FileCheck 不要求逐文件确认；核对完成后可以将本次候选批量�
 完整验证整个备份
 → 对全部源文件执行 size + SHA-256 强复核
 → 任一异常则整批删除不启动
+→ 检查 source_path 不属于任何历史 FileCheck 备份
 → 用户明确确认
 → 根据预检快照逐文件删除 manifest 指定的 source_path
+→ 删除返回后再次确认路径确实不存在
 ```
 
 删除状态单独保存在：
@@ -365,6 +364,7 @@ source-removal.json
 
 - 扫描结果必须人工核对。
 - 备份和源文件删除必须分成两个独立动作。
+- 历史 FileCheck 备份不会再次作为普通源文件进入扫描、备份和删除链路。
 - 删除前会再次验证完整备份与源文件状态。
 - 恢复前会完整验证备份。
 - `manifest.json` 是备份事实记录，不随删除状态改变。
