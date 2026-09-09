@@ -122,6 +122,38 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           if (-not (Test-Path "dist\FileCheck-GUI.exe")) { throw "native FileCheck-GUI.exe was not produced" }
 
+          # PyInstaller already writes the correct multi-size icon into the CLI
+          # and GUI runtime. Reuse its proven Windows icon writer on the small
+          # native root launcher as well so Explorer receives the exact same
+          # icon group instead of falling back to a generic/Python icon.
+          $env:FILECHECK_SHARED_ICON = $ctkIcon
+          python -c "import os; from PyInstaller.utils.win32.icon import CopyIcons; CopyIcons(r'dist\FileCheck-GUI.exe', os.environ['FILECHECK_SHARED_ICON'])"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          # Regression gate: the icon extracted from the root launcher must be
+          # pixel-identical to the icon extracted from the CLI executable.
+          Add-Type -AssemblyName System.Drawing
+          function Get-ExeIconHash([string]$Path, [string]$Name) {
+            $resolved = (Resolve-Path $Path).Path
+            $icon = [System.Drawing.Icon]::ExtractAssociatedIcon($resolved)
+            if ($null -eq $icon) { throw "Unable to extract icon from $Path" }
+            $bitmap = $icon.ToBitmap()
+            $png = Join-Path $env:RUNNER_TEMP "$Name.png"
+            try {
+              $bitmap.Save($png, [System.Drawing.Imaging.ImageFormat]::Png)
+            }
+            finally {
+              $bitmap.Dispose()
+              $icon.Dispose()
+            }
+            return (Get-FileHash $png -Algorithm SHA256).Hash
+          }
+          $cliIconHash = Get-ExeIconHash "dist\FileCheck.exe" "filecheck-cli-icon"
+          $guiIconHash = Get-ExeIconHash "dist\FileCheck-GUI.exe" "filecheck-gui-icon"
+          Write-Host "CLI icon hash: $cliIconHash"
+          Write-Host "GUI icon hash: $guiIconHash"
+          if ($cliIconHash -ne $guiIconHash) { throw "FileCheck-GUI.exe icon does not match FileCheck.exe" }
+
       - name: Smoke test raw executables
         shell: pwsh
         run: |
