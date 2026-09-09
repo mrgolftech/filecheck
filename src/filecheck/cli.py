@@ -424,7 +424,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_doctor)
 
     p = sub.add_parser("index", help="选择磁盘/目录并建立 FileCheck 专用 portable Everything 索引")
-    p.add_argument("--drive", action="append", required=True, help="要索引的盘符/目录；可重复，例如 --drive C: --drive D:\")
+    p.add_argument("--drive", action="append", required=True, help="要索引的盘符/目录；可重复，例如 --drive C:/ --drive D:/")
     p.add_argument("--backup-root", required=True, help="统一备份根目录；会自动从索引和扫描结果中排除")
     p.add_argument("--es")
     p.add_argument("--everything")
