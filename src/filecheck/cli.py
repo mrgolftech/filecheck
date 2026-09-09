@@ -21,6 +21,7 @@ from .portable_everything import (
     find_everything_exe,
     load_index_state,
 )
+from .scan_guard import filter_protected_backup_items
 from .selftest import run_selftest
 from .util import now_iso, program_dir, scan_results_dir, sha256_file, write_json
 
@@ -184,16 +185,31 @@ def cmd_scan(args: argparse.Namespace) -> int:
     print(f"使用 FileCheck 专用 Everything {status.everything_version} / ES {status.es_version}")
     print(f"索引范围: {', '.join(state.get('selected_roots', []))}")
     print("正在按关键词查询专用索引……")
-    items = scan_keywords(
-        rules["keywords"],
-        rules["extensions"],
-        es=args.es,
-        max_results_per_keyword=int(rules.get("max_results_per_keyword", 100000)),
-        match_path=args.match_path,
-        path_prefix=args.path,
-        instance=FILECHECK_INSTANCE,
-        exclude_roots=exclusions,
+    raw_items = list(
+        scan_keywords(
+            rules["keywords"],
+            rules["extensions"],
+            es=args.es,
+            max_results_per_keyword=int(rules.get("max_results_per_keyword", 100000)),
+            match_path=args.match_path,
+            path_prefix=args.path,
+            instance=FILECHECK_INSTANCE,
+            exclude_roots=exclusions,
+        )
     )
+    items, protected_batches = filter_protected_backup_items(raw_items)
+    excluded_backup_items = len(raw_items) - len(items)
+    if excluded_backup_items:
+        print(
+            _warning(
+                f"已自动排除 {excluded_backup_items} 个位于历史 FileCheck 备份中的候选文件，"
+                f"涉及 {len(protected_batches)} 个备份批次。"
+            )
+        )
+        for batch_path in protected_batches[:5]:
+            print(f"  保护的历史备份: {_info(batch_path)}")
+        if len(protected_batches) > 5:
+            print(f"  另有 {len(protected_batches) - 5} 个历史备份批次已保护。")
     _print_scan(items, limit=args.list_limit)
     output = Path(args.output)
     payload = {
@@ -204,6 +220,8 @@ def cmd_scan(args: argparse.Namespace) -> int:
         "everything_version": status.everything_version,
         "selected_roots": state.get("selected_roots", []),
         "excluded_roots": exclusions,
+        "protected_backup_batches": protected_batches,
+        "excluded_backup_items": excluded_backup_items,
         "match_path": args.match_path,
         "path_filter": args.path,
         "rules": _rules_metadata(args.rules),
@@ -406,7 +424,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_doctor)
 
     p = sub.add_parser("index", help="选择磁盘/目录并建立 FileCheck 专用 portable Everything 索引")
-    p.add_argument("--drive", action="append", required=True, help="要索引的盘符/目录；可重复，例如 --drive C: --drive D:")
+    p.add_argument("--drive", action="append", required=True, help="要索引的盘符/目录；可重复，例如 --drive C: --drive D:\")
     p.add_argument("--backup-root", required=True, help="统一备份根目录；会自动从索引和扫描结果中排除")
     p.add_argument("--es")
     p.add_argument("--everything")
