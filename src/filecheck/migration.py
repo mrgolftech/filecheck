@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Iterable
+from typing import Callable, Iterable
 
 from .backup import BackupError, ProgressCallback, verify_backup
 from .util import now_iso, read_json, sha256_file, write_json, write_text
@@ -12,6 +12,7 @@ class MigrationError(BackupError):
     pass
 
 
+CancelCheck = Callable[[], bool]
 _STATE_SCHEMA_VERSION = 2
 _DEFAULT_CHECKPOINT_EVERY = 1
 _ALLOWED_ITEM_STATES = {"pending", "deleted", "already_absent", "failed", "reappeared"}
@@ -246,6 +247,19 @@ def _resolve_state_path(state_path: str | Path) -> Path:
     return candidate
 
 
+def _cancel_after_checkpoint(
+    should_cancel: CancelCheck | None,
+    state_file: Path,
+    state: dict,
+    checkpoint_written: bool,
+) -> bool:
+    if should_cancel is None or not should_cancel():
+        return False
+    if not checkpoint_written:
+        _checkpoint(state_file, state)
+    return True
+
+
 def remove_verified_sources(
     backup: str | Path,
     *,
@@ -253,8 +267,13 @@ def remove_verified_sources(
     progress: ProgressCallback | None = None,
     preflight: bool = True,
     checkpoint_every: int = _DEFAULT_CHECKPOINT_EVERY,
+    should_cancel: CancelCheck | None = None,
 ) -> tuple[Path, dict]:
-    """Remove only manifest-listed files, skipping failures and journaling each step."""
+    """Remove only manifest-listed files, journaling every safe cancellation point.
+
+    ``should_cancel`` is checked only after the current deletion result has been
+    durably checkpointed. CLI callers omit it and retain the original behavior.
+    """
     backup_path = Path(backup).expanduser().resolve()
     manifest = verify_backup(backup_path)
     if preflight:
@@ -274,8 +293,11 @@ def remove_verified_sources(
         key = os.path.normcase(os.path.abspath(str(row["source_path"])))
         _remove_one(row, manifest_map[key])
         _notify(progress, "remove", index, total, row["source_path"])
-        if index % every == 0 or row["state"] == "failed" or index == total:
+        checkpoint_written = index % every == 0 or row["state"] == "failed" or index == total
+        if checkpoint_written:
             _checkpoint(state_file, state)
+        if _cancel_after_checkpoint(should_cancel, state_file, state, checkpoint_written):
+            break
     _checkpoint(state_file, state)
     return state_file, state
 
@@ -285,6 +307,7 @@ def resume_migration(
     *,
     progress: ProgressCallback | None = None,
     checkpoint_every: int = _DEFAULT_CHECKPOINT_EVERY,
+    should_cancel: CancelCheck | None = None,
 ) -> tuple[Path, dict]:
     state_file = _resolve_state_path(state_path)
     if not state_file.is_file():
@@ -319,7 +342,10 @@ def resume_migration(
             key = os.path.normcase(os.path.abspath(str(row["source_path"])))
             _remove_one(row, manifest_map[key])
         _notify(progress, "remove", index, total, row["source_path"])
-        if index % every == 0 or row["state"] == "failed" or index == total:
+        checkpoint_written = index % every == 0 or row["state"] == "failed" or index == total
+        if checkpoint_written:
             _checkpoint(state_file, state)
+        if _cancel_after_checkpoint(should_cancel, state_file, state, checkpoint_written):
+            break
     _checkpoint(state_file, state)
     return state_file, state

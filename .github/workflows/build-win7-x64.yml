@@ -6,8 +6,10 @@ on:
     branches:
       - release/win7-x64-work
       - feat/v0.1.1-cli-workflow
+      - feat/gui-customtkinter
       - main
     paths:
+      - "README.md"
       - "src/**"
       - "config/**"
       - "packaging/**"
@@ -45,7 +47,13 @@ jobs:
         shell: pwsh
         run: |
           python -m pip install --upgrade "pip<25" "setuptools<76" "wheel<0.46"
-          python -m pip install "colorama==0.4.6" "pytest==7.4.4" "pyinstaller==5.13.2"
+          python -m pip install `
+            "colorama==0.4.6" `
+            "pytest==7.4.4" `
+            "pyinstaller==5.13.2" `
+            "customtkinter==5.2.2" `
+            "darkdetect==0.8.0" `
+            "packaging==24.2"
 
       - name: Compile all source with Python 3.8
         shell: pwsh
@@ -139,8 +147,8 @@ jobs:
           New-Item -ItemType Directory -Force "$pkg\tools" | Out-Null
 
           Copy-Item "dist\FileCheck.exe" "$pkg\FileCheck.exe"
+          Copy-Item "README.md" "$pkg\README.md"
           Copy-Item "config\rules.json" "$pkg\config\rules.json"
-          Copy-Item "packaging\README-WIN7-X64.txt" "$pkg\README-WIN7-X64.txt"
           Copy-Item "packaging\THIRD-PARTY-NOTICES.txt" "$pkg\THIRD-PARTY-NOTICES.txt"
 
           $es = Get-ChildItem "es-dist" -Recurse -File -Filter "es.exe" | Select-Object -First 1
@@ -157,7 +165,7 @@ jobs:
             tools\es.exe
 
           FileCheck starts a dedicated Everything instance named FileCheck and stores
-          its Everything.ini / Everything.db under runtime\everything.
+          its Everything.ini / Everything-FileCheck.db under runtime\everything.
           "@ | Set-Content -Encoding UTF8 "$pkg\tools\README.txt"
 
           $filecheckHash = (Get-FileHash "$pkg\FileCheck.exe" -Algorithm SHA256).Hash
@@ -180,6 +188,7 @@ jobs:
           $verifyDir = Join-Path $env:RUNNER_TEMP "filecheck-win7-check"
           Expand-Archive "FileCheck-v0.1.1-win7-x64.zip" -DestinationPath $verifyDir -Force
           if (-not (Test-Path (Join-Path $verifyDir "FileCheck.exe"))) { throw "FileCheck.exe missing" }
+          if (-not (Test-Path (Join-Path $verifyDir "README.md"))) { throw "README.md missing" }
           if (-not (Test-Path (Join-Path $verifyDir "tools\es.exe"))) { throw "tools\es.exe missing" }
           if (-not (Test-Path (Join-Path $verifyDir "tools\Everything.exe"))) { throw "tools\Everything.exe missing" }
           if (-not (Test-Path (Join-Path $verifyDir "config\rules.json"))) { throw "rules.json missing" }

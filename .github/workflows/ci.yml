@@ -22,5 +22,41 @@ jobs:
         run: python -m pip install -e ".[dev]"
       - name: Unit tests
         run: python -m pytest -q
+      - name: GUI construction smoke test
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          python -c "from filecheck.gui.app import FileCheckApp; app=FileCheckApp(); app.withdraw(); app.update_idletasks(); app.destroy(); print('GUI construction OK')"
       - name: Backup/restore selftest
         run: filecheck selftest
+
+  win7-gui-python38-compat:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.8.10"
+          architecture: "x64"
+      - name: Install Win7-compatible GUI dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade "pip<25" "setuptools<76" "wheel<0.46"
+          python -m pip install "colorama==0.4.6" "customtkinter==5.2.2"
+      - name: Compile source with Python 3.8
+        shell: pwsh
+        run: |
+          python -m compileall -q src
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Import GUI service modules
+        shell: pwsh
+        env:
+          PYTHONPATH: src
+        run: |
+          python -c "import filecheck.gui.task_runner, filecheck.gui.scan_service, filecheck.gui.app; print('GUI Python 3.8 import OK')"
+      - name: Construct GUI with Python 3.8
+        shell: pwsh
+        env:
+          PYTHONPATH: src
+        run: |
+          python -c "from filecheck.gui.app import FileCheckApp; app=FileCheckApp(); app.withdraw(); app.update_idletasks(); app.destroy(); print('GUI Python 3.8 construction OK')"

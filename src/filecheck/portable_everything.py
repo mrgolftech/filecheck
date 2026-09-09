@@ -215,9 +215,6 @@ def _write_ini(
     lines = [
         "[Everything]",
         "app_data=0",
-        # Keep the dedicated FileCheck instance headless.  The explicit
-        # Everything.exe -db argument is the single source of truth for the DB
-        # file, so do not also set db_location here.
         "run_as_admin=0",
         "run_in_background=1",
         "ipc=1",
@@ -309,7 +306,7 @@ def start_instance(
     while time.time() < deadline:
         try:
             return get_status(es, instance=FILECHECK_INSTANCE)
-        except Exception as exc:  # startup race; surface the final error below
+        except Exception as exc:
             last_error = exc
             time.sleep(0.25)
     raise PortableEverythingError(f"FileCheck 专用 Everything 实例启动超时: {last_error}")
@@ -319,6 +316,7 @@ def configure_and_reindex(
     selected_roots: Iterable[str | Path],
     backup_root: str | Path,
     *,
+    additional_excluded_roots: Iterable[str | Path] = (),
     everything: str | None = None,
     es: str | None = None,
     progress: Callable[[float], None] | None = None,
@@ -328,7 +326,8 @@ def configure_and_reindex(
         raise PortableEverythingError("至少选择一个要建立索引的磁盘/目录")
 
     backup = os.path.abspath(os.path.expanduser(str(backup_root)))
-    excluded = _normalize_roots([program_dir(), backup])
+    backup_roots = _normalize_roots([backup, *list(additional_excluded_roots)])
+    excluded = _normalize_roots([program_dir(), *backup_roots])
     ntfs_roots, folder_roots, filesystems = _split_index_roots(selected)
 
     if ntfs_roots and os.name == "nt" and not _is_admin():
@@ -338,8 +337,6 @@ def configure_and_reindex(
             f"请右键“以管理员身份运行”后重试。NTFS 磁盘: {drives}"
         )
 
-    # Reconfiguration is performed with only the dedicated FileCheck instance
-    # stopped. A separately installed/default Everything instance is untouched.
     try:
         stop_instance(everything)
         time.sleep(0.3)
@@ -372,7 +369,8 @@ def configure_and_reindex(
         "ntfs_roots": ntfs_roots,
         "folder_roots": folder_roots,
         "filesystems": filesystems,
-        "backup_root": backup,
+        "backup_root": backup_roots[0],
+        "backup_roots": backup_roots,
         "excluded_roots": excluded,
         "everything_exe": str(find_everything_exe(everything)),
         "everything_version": status.everything_version,

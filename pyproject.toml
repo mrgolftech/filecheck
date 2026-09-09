@@ -4,12 +4,15 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "filecheck"
-version = "0.1.1"
+version = "0.2.0"
 description = "Portable Windows file self-check, directory backup, verification, safe source removal and restore tool"
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [{name = "mrgolftech"}]
-dependencies = ["colorama>=0.4.6,<1"]
+dependencies = [
+    "colorama>=0.4.6,<1",
+    "customtkinter>=5.2.2,<6",
+]
 
 [project.optional-dependencies]
 dev = ["pytest>=8,<9"]
@@ -17,6 +20,7 @@ build = ["pyinstaller>=6,<7"]
 
 [project.scripts]
 filecheck = "filecheck.launcher:main"
+filecheck-gui = "filecheck.gui.entry:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

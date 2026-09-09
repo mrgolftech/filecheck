@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 import time
 from dataclasses import replace
@@ -14,12 +15,20 @@ _ORIGINAL_CONFIGURE_AND_REINDEX = portable.configure_and_reindex
 
 
 def database_path() -> Path:
-    """Return the explicit DB file used by the dedicated FileCheck instance."""
+    """Return the one explicit DB file used by the dedicated FileCheck instance."""
     return portable.portable_root() / f"Everything-{FILECHECK_INSTANCE}.db"
 
 
+def _hidden_startupinfo():
+    if os.name != "nt" or not hasattr(subprocess, "STARTUPINFO"):
+        return None
+    info = subprocess.STARTUPINFO()
+    info.dwFlags |= getattr(subprocess, "STARTF_USESHOWWINDOW", 0)
+    info.wShowWindow = 0
+    return info
+
+
 def _remove_legacy_empty_db_directory() -> None:
-    """Remove the v0.1.1 bug artifact: an empty directory named Everything.db."""
     legacy = portable.portable_root() / "Everything.db"
     if not legacy.is_dir():
         return
@@ -29,6 +38,60 @@ def _remove_legacy_empty_db_directory() -> None:
         raise portable.PortableEverythingError(
             f"检测到旧版错误创建的数据库目录且目录非空，请先人工检查后删除: {legacy}"
         ) from exc
+
+
+def _remove_legacy_wrong_db_file_after_success(db: Path) -> None:
+    legacy = portable.portable_root() / "Everything.db"
+    try:
+        if legacy.is_file() and legacy.resolve() != db.resolve():
+            legacy.unlink()
+    except OSError:
+        pass
+
+
+def _invalidate_index_state() -> None:
+    state = portable.index_state_path()
+    for candidate in (state, state.with_suffix(state.suffix + ".tmp")):
+        try:
+            candidate.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def stop_instance(
+    everything: str | None = None,
+    *,
+    es: str | None = None,
+    wait_seconds: int = 10,
+) -> None:
+    """Stop only an actually-running FileCheck instance and wait for IPC exit."""
+    try:
+        get_status(es, instance=FILECHECK_INSTANCE)
+    except Exception:
+        return
+
+    exe = portable.find_everything_exe(everything)
+    try:
+        subprocess.run(
+            [str(exe), "-instance", FILECHECK_INSTANCE, "-exit"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=10,
+            creationflags=portable._creationflags(),
+            startupinfo=_hidden_startupinfo(),
+        )
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+    deadline = time.time() + max(1, wait_seconds)
+    while time.time() < deadline:
+        try:
+            get_status(es, instance=FILECHECK_INSTANCE)
+        except Exception:
+            return
+        time.sleep(0.1)
+    raise portable.PortableEverythingError("旧的 FileCheck Everything 实例未能完全退出，请稍后重试。")
 
 
 def start_instance(
@@ -42,10 +105,8 @@ def start_instance(
     db = database_path()
     if not ini.is_file():
         raise portable.PortableEverythingError("尚未创建 FileCheck 索引配置，请先选择磁盘并建立索引。")
+    db.parent.mkdir(parents=True, exist_ok=True)
 
-    # Use one and only one database-location mechanism: an explicit -db file.
-    # Do not also set db_location in the INI. -startup plus the INI's
-    # run_in_background=1 keeps the dedicated instance headless.
     subprocess.Popen(
         [
             str(exe),
@@ -60,6 +121,7 @@ def start_instance(
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         creationflags=portable._creationflags(),
+        startupinfo=_hidden_startupinfo(),
     )
 
     deadline = time.time() + max(1, wait_seconds)
@@ -79,16 +141,9 @@ def _flush_database_to_disk(
     es: str | None = None,
     wait_seconds: int = 30,
 ) -> Path:
-    """Persist the live Everything DB through ES IPC without opening a GUI."""
-    del everything  # persistence is sent to the already-running named instance through ES
+    del everything
     es_path = find_es(es)
-    command = [
-        str(es_path),
-        "-argv",
-        "-instance",
-        FILECHECK_INSTANCE,
-        "-save-db",
-    ]
+    command = [str(es_path), "-argv", "-instance", FILECHECK_INSTANCE, "-save-db"]
     proc = subprocess.run(
         command,
         stdout=subprocess.PIPE,
@@ -96,6 +151,7 @@ def _flush_database_to_disk(
         check=False,
         timeout=60,
         creationflags=portable._creationflags(),
+        startupinfo=_hidden_startupinfo(),
     )
     if proc.returncode != 0:
         detail = (proc.stderr or proc.stdout).decode(errors="replace").strip()
@@ -127,19 +183,29 @@ def configure_and_reindex(
     es: str | None = None,
     progress: Callable[[float], None] | None = None,
 ) -> portable.PortableIndexResult:
+    # GUI imports this function directly and does not pass through launcher.py.
+    # Install here so every entry point uses the same named DB/start/stop path.
+    install()
     _remove_legacy_empty_db_directory()
-    result = _ORIGINAL_CONFIGURE_AND_REINDEX(
-        selected_roots,
-        backup_root,
-        everything=everything,
-        es=es,
-        progress=progress,
-    )
-    db = _flush_database_to_disk(everything, es=es)
+    try:
+        result = _ORIGINAL_CONFIGURE_AND_REINDEX(
+            selected_roots,
+            backup_root,
+            everything=everything,
+            es=es,
+            progress=progress,
+        )
+        db = _flush_database_to_disk(everything, es=es)
+    except BaseException:
+        _invalidate_index_state()
+        raise
+
+    _remove_legacy_wrong_db_file_after_success(db)
     return replace(result, database_path=db)
 
 
 def ensure_instance(es: str | None = None, everything: str | None = None) -> EverythingStatus:
+    install()
     try:
         return get_status(es, instance=FILECHECK_INSTANCE)
     except EverythingError:
@@ -147,6 +213,7 @@ def ensure_instance(es: str | None = None, everything: str | None = None) -> Eve
 
 
 def install() -> None:
-    """Install the hardened DB path/startup behavior into portable_everything."""
+    """Install hardened DB path/start/stop behavior into portable_everything."""
     portable.everything_db_path = database_path
     portable.start_instance = start_instance
+    portable.stop_instance = stop_instance
