@@ -21,11 +21,20 @@ ProgressCallback = Callable[[str, int, int, str], None]
 _MIN_FREE_RESERVE = 16 * 1024 * 1024
 _MAX_FREE_RESERVE = 512 * 1024 * 1024
 _IO_CHUNK_SIZE = 8 * 1024 * 1024
+_TEMP_TOKEN_HEX = 16
+_WINDOWS_SAFE_PATH_CHARS = 240
+_COMPACT_STORAGE_DIR = "_long"
+_COMPACT_HASH_HEX = 64
+_TEMP_PLACEHOLDER = ".fc-b-0000000000000000.part"
 
 
 def _notify(progress: ProgressCallback | None, stage: str, current: int, total: int, path: str | Path) -> None:
     if progress is not None:
         progress(stage, current, total, str(path))
+
+
+def _is_windows() -> bool:
+    return os.name == "nt"
 
 
 def _is_within(child: Path, parent: Path) -> bool:
@@ -210,9 +219,85 @@ def _source_snapshot_changed(before: os.stat_result, after: os.stat_result, copi
     return bool(before_ctime is not None and after_ctime is not None and before_ctime != after_ctime)
 
 
+def _compact_temp_name(role: str) -> str:
+    """Return a short hidden temp name for atomic same-directory operations."""
+    return f".fc-{role}-{uuid.uuid4().hex[:_TEMP_TOKEN_HEX]}.part"
+
+
+def _atomic_temp_path(target: Path, role: str) -> Path:
+    return target.parent / _compact_temp_name(role)
+
+
+def _windows_full_path(root: str | Path, rel: Path) -> PureWindowsPath:
+    root_win = PureWindowsPath(str(root))
+    rel_win = PureWindowsPath(str(rel).replace("/", "\\"))
+    return root_win / rel_win
+
+
+def _windows_path_is_legacy_safe(path: PureWindowsPath) -> bool:
+    text = str(path)
+    if len(text) > _WINDOWS_SAFE_PATH_CHARS:
+        return False
+    for part in path.parts:
+        if part == path.anchor:
+            continue
+        if len(part) > 255:
+            return False
+    return True
+
+
+def _windows_backup_relpath_is_safe(rel: Path, staging: str | Path, final_dir: str | Path) -> bool:
+    """Check both temporary-batch and published-batch paths conservatively.
+
+    Win7's legacy path handling has several MAX_PATH edge cases below the
+    nominal 260-character ceiling.  FileCheck therefore keeps every created
+    path at or below 240 characters and also reserves room for the short atomic
+    temp name used in the target directory.
+    """
+    for root in (staging, final_dir):
+        target = _windows_full_path(root, rel)
+        temp = target.parent / _TEMP_PLACEHOLDER
+        if not _windows_path_is_legacy_safe(target):
+            return False
+        if not _windows_path_is_legacy_safe(temp):
+            return False
+    return True
+
+
+def _compact_backup_relpath(source: Path) -> Path:
+    source_text = os.path.normcase(os.path.abspath(str(source)))
+    digest = hashlib.sha256(source_text.encode("utf-8", errors="surrogatepass")).hexdigest()[:_COMPACT_HASH_HEX]
+    win = PureWindowsPath(str(source))
+    if win.drive:
+        if str(source).startswith("\\\\"):
+            drive = "UNC"
+        else:
+            drive = (win.drive.rstrip(":") or "ROOT").upper()
+    else:
+        drive = "ROOT"
+    suffix = source.suffix
+    if len(suffix) > 16:
+        suffix = ""
+    return Path("files") / _COMPACT_STORAGE_DIR / drive / digest[:2] / f"{digest}{suffix}"
+
+
+def _select_backup_relpath(source: Path, staging: Path, final_dir: Path) -> tuple[Path, str]:
+    mirrored = backup_relpath(source)
+    if not _is_windows() or _windows_backup_relpath_is_safe(mirrored, staging, final_dir):
+        return mirrored, "mirrored"
+
+    compact = _compact_backup_relpath(source)
+    if not _windows_backup_relpath_is_safe(compact, staging, final_dir):
+        raise BackupError(
+            "备份根目录路径过深，无法在 Windows 7 的安全路径范围内创建备份。"
+            f"请改用更短的备份根目录: {staging.parent}"
+        )
+    return compact, "compact-long-path"
+
+
 def _atomic_copy_to_backup(source: Path, target: Path) -> tuple[str, os.stat_result]:
     target.parent.mkdir(parents=True, exist_ok=True)
-    temp = target.with_name(f".{target.name}.{uuid.uuid4().hex}.part")
+    temp = _atomic_temp_path(target, "b")
     before = source.stat()
     try:
         source_hash, copied = _copy_source_to_temp_with_hash(source, temp)
@@ -253,7 +338,7 @@ def create_backup(
         "created_at": now_iso(),
         "mode": "directory",
         "copy_strategy": "single-pass-sha256-v1",
-        "storage_layout": "mirrored-source-tree-v1",
+        "storage_layout": "mirrored-source-tree-with-compact-fallback-v2",
         "source_bytes_total": source_bytes,
         "space_required_estimate": required_bytes,
         "space_free_at_start": free_bytes,
@@ -265,13 +350,14 @@ def create_backup(
         total = len(files)
         for index, source in enumerate(files, start=1):
             source = source.resolve()
-            rel = backup_relpath(source)
+            rel, storage_path_mode = _select_backup_relpath(source, staging, final_dir)
             target = staging / rel
             source_hash, source_stat = _atomic_copy_to_backup(source, target)
             manifest["items"].append(
                 {
                     "source_path": str(source),
                     "backup_path": rel.as_posix(),
+                    "storage_path_mode": storage_path_mode,
                     "size": source_stat.st_size,
                     "mtime_ns": source_stat.st_mtime_ns,
                     "sha256": source_hash,
@@ -305,7 +391,7 @@ def _resolve_conflict(path: Path, mode: str) -> Path | None:
 
 
 def _restore_temp_path(target: Path) -> Path:
-    return target.parent / f".{target.name}.filecheck-restore-{uuid.uuid4().hex}.part"
+    return _atomic_temp_path(target, "r")
 
 
 def _finish_atomic_restore(temp: Path, target: Path, item: dict) -> None:
