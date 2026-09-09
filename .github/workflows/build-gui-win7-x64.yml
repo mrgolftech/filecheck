@@ -43,13 +43,7 @@ jobs:
         shell: pwsh
         run: |
           python -m pip install --upgrade "pip<25" "setuptools<76" "wheel<0.46"
-          python -m pip install `
-            "colorama==0.4.6" `
-            "pytest==7.4.4" `
-            "pyinstaller==5.13.2" `
-            "customtkinter==5.2.2" `
-            "darkdetect==0.8.0" `
-            "packaging==24.2"
+          python -m pip install "colorama==0.4.6" "pytest==7.4.4" "pyinstaller==5.13.2" "customtkinter==5.2.2" "darkdetect==0.8.0" "packaging==24.2"
 
       - name: Compile all source with Python 3.8
         shell: pwsh
@@ -70,17 +64,7 @@ jobs:
         run: |
           $ctkIcon = python -c "import pathlib,customtkinter; print(pathlib.Path(customtkinter.__file__).resolve().parent / 'assets' / 'icons' / 'CustomTkinter_icon_Windows.ico')"
           if (-not (Test-Path $ctkIcon)) { throw "CustomTkinter Windows icon not found: $ctkIcon" }
-          Write-Host "Shared application icon: $ctkIcon"
-          pyinstaller `
-            --noconfirm `
-            --clean `
-            --onefile `
-            --console `
-            --name FileCheck `
-            --icon "$ctkIcon" `
-            --paths src `
-            --add-data "config/rules.json;config" `
-            packaging/filecheck_entry.py
+          pyinstaller --noconfirm --clean --onefile --console --name FileCheck --icon "$ctkIcon" --paths src --add-data "config/rules.json;config" packaging/filecheck_entry.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Build GUI runtime onedir bundle
@@ -89,22 +73,10 @@ jobs:
           $ctkPath = python -c "import pathlib,customtkinter; print(pathlib.Path(customtkinter.__file__).resolve().parent)"
           $ctkIcon = Join-Path $ctkPath "assets\icons\CustomTkinter_icon_Windows.ico"
           if (-not (Test-Path $ctkIcon)) { throw "CustomTkinter Windows icon not found: $ctkIcon" }
-          Write-Host "CustomTkinter package: $ctkPath"
-          pyinstaller `
-            --noconfirm `
-            --clean `
-            --onedir `
-            --windowed `
-            --name FileCheck-GUI-runtime `
-            --icon "$ctkIcon" `
-            --paths src `
-            --hidden-import darkdetect `
-            --add-data "config/rules.json;config" `
-            --add-data "$ctkPath;customtkinter" `
-            packaging/filecheck_gui_entry.py
+          pyinstaller --noconfirm --clean --onedir --windowed --name FileCheck-GUI-runtime --icon "$ctkIcon" --paths src --hidden-import darkdetect --add-data "config/rules.json;config" --add-data "$ctkPath;customtkinter" packaging/filecheck_gui_entry.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Build native root GUI launcher
+      - name: Build native root GUI launcher and verify icon
         shell: pwsh
         run: |
           $ctkIcon = python -c "import pathlib,customtkinter; print(pathlib.Path(customtkinter.__file__).resolve().parent / 'assets' / 'icons' / 'CustomTkinter_icon_Windows.ico')"
@@ -122,16 +94,13 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           if (-not (Test-Path "dist\FileCheck-GUI.exe")) { throw "native FileCheck-GUI.exe was not produced" }
 
-          # PyInstaller already writes the correct multi-size icon into the CLI
-          # and GUI runtime. Reuse its proven Windows icon writer on the small
-          # native root launcher as well so Explorer receives the exact same
-          # icon group instead of falling back to a generic/Python icon.
+          # Use the exact same icon-writing code path that PyInstaller uses for
+          # FileCheck.exe. PyInstaller 5.13 requires its standalone utility
+          # context to have workpath/specpath initialized first.
           $env:FILECHECK_SHARED_ICON = $ctkIcon
-          python -c "import os; from PyInstaller.utils.win32.icon import CopyIcons; CopyIcons(r'dist\FileCheck-GUI.exe', os.environ['FILECHECK_SHARED_ICON'])"
+          python -c "import os; from PyInstaller import config; config.CONF['workpath']=os.getcwd(); config.CONF['specpath']=os.getcwd(); from PyInstaller.utils.win32.icon import CopyIcons; CopyIcons(r'dist\FileCheck-GUI.exe', os.environ['FILECHECK_SHARED_ICON'])"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-          # Regression gate: the icon extracted from the root launcher must be
-          # pixel-identical to the icon extracted from the CLI executable.
           Add-Type -AssemblyName System.Drawing
           function Get-ExeIconHash([string]$Path, [string]$Name) {
             $resolved = (Resolve-Path $Path).Path
@@ -139,13 +108,8 @@ jobs:
             if ($null -eq $icon) { throw "Unable to extract icon from $Path" }
             $bitmap = $icon.ToBitmap()
             $png = Join-Path $env:RUNNER_TEMP "$Name.png"
-            try {
-              $bitmap.Save($png, [System.Drawing.Imaging.ImageFormat]::Png)
-            }
-            finally {
-              $bitmap.Dispose()
-              $icon.Dispose()
-            }
+            try { $bitmap.Save($png, [System.Drawing.Imaging.ImageFormat]::Png) }
+            finally { $bitmap.Dispose(); $icon.Dispose() }
             return (Get-FileHash $png -Algorithm SHA256).Hash
           }
           $cliIconHash = Get-ExeIconHash "dist\FileCheck.exe" "filecheck-cli-icon"
@@ -166,38 +130,31 @@ jobs:
         shell: pwsh
         run: |
           function Invoke-DownloadWithRetry {
-            param(
-              [Parameter(Mandatory=$true)][string]$Uri,
-              [Parameter(Mandatory=$true)][string]$OutFile,
-              [int]$Attempts = 4
-            )
+            param([string]$Uri, [string]$OutFile, [int]$Attempts = 4)
             for ($i = 1; $i -le $Attempts; $i++) {
               try {
                 Remove-Item -LiteralPath $OutFile -Force -ErrorAction SilentlyContinue
-                Write-Host "Download attempt $i/$Attempts : $Uri"
                 Invoke-WebRequest -Uri $Uri -OutFile $OutFile -TimeoutSec 120
                 if (-not (Test-Path -LiteralPath $OutFile)) { throw "Download completed without output file: $OutFile" }
                 return
               }
               catch {
                 if ($i -eq $Attempts) { throw }
-                $delay = 5 * $i
-                Write-Warning "Download failed: $($_.Exception.Message). Retry in $delay seconds."
-                Start-Sleep -Seconds $delay
+                Start-Sleep -Seconds (5 * $i)
               }
             }
           }
 
           Invoke-DownloadWithRetry -Uri "$env:ES_URL" -OutFile "ES-1.1.0.37.x64.zip"
           $esActual = (Get-FileHash "ES-1.1.0.37.x64.zip" -Algorithm SHA256).Hash
-          if ($esActual -ne $env:ES_ZIP_SHA256) { throw "ES archive SHA-256 mismatch. expected=$env:ES_ZIP_SHA256 actual=$esActual" }
+          if ($esActual -ne $env:ES_ZIP_SHA256) { throw "ES archive SHA-256 mismatch" }
           Expand-Archive "ES-1.1.0.37.x64.zip" -DestinationPath "es-dist" -Force
           $es = Get-ChildItem "es-dist" -Recurse -File -Filter "es.exe" | Select-Object -First 1
           if (-not $es) { throw "es.exe not found in official ES archive" }
 
           Invoke-DownloadWithRetry -Uri "$env:EVERYTHING_URL" -OutFile "Everything-1.4.1.1032.x64.zip"
           $everythingActual = (Get-FileHash "Everything-1.4.1.1032.x64.zip" -Algorithm SHA256).Hash
-          if ($everythingActual -ne $env:EVERYTHING_ZIP_SHA256) { throw "Everything archive SHA-256 mismatch. expected=$env:EVERYTHING_ZIP_SHA256 actual=$everythingActual" }
+          if ($everythingActual -ne $env:EVERYTHING_ZIP_SHA256) { throw "Everything archive SHA-256 mismatch" }
           Expand-Archive "Everything-1.4.1.1032.x64.zip" -DestinationPath "everything-dist" -Force
           $everything = Get-ChildItem "everything-dist" -Recurse -File -Filter "Everything.exe" | Select-Object -First 1
           if (-not $everything) { throw "Everything.exe not found in official portable archive" }
@@ -206,21 +163,13 @@ jobs:
         shell: pwsh
         run: |
           $pkg = "package\FileCheck-GUI-win7-x64"
-          New-Item -ItemType Directory -Force $pkg | Out-Null
-          New-Item -ItemType Directory -Force "$pkg\app" | Out-Null
-          New-Item -ItemType Directory -Force "$pkg\config" | Out-Null
-          New-Item -ItemType Directory -Force "$pkg\tools" | Out-Null
-          New-Item -ItemType Directory -Force "$pkg\advanced" | Out-Null
-
-          # Root stays clean: only a tiny native launcher is user-facing. All
-          # Python/Tk/CustomTkinter DLL/PYD runtime files live under app\.
+          foreach ($dir in @($pkg, "$pkg\app", "$pkg\config", "$pkg\tools", "$pkg\advanced")) { New-Item -ItemType Directory -Force $dir | Out-Null }
           Copy-Item "dist\FileCheck-GUI.exe" "$pkg\FileCheck-GUI.exe" -Force
           Copy-Item "dist\FileCheck-GUI-runtime\*" "$pkg\app" -Recurse -Force
           Copy-Item "dist\FileCheck.exe" "$pkg\advanced\FileCheck.exe" -Force
           Copy-Item "config\rules.json" "$pkg\config\rules.json" -Force
           Copy-Item "packaging\README-GUI-WIN7-X64.txt" "$pkg\README.txt" -Force
           Copy-Item "packaging\THIRD-PARTY-NOTICES.txt" "$pkg\THIRD-PARTY-NOTICES.txt" -Force
-
           $es = Get-ChildItem "es-dist" -Recurse -File -Filter "es.exe" | Select-Object -First 1
           $everything = Get-ChildItem "everything-dist" -Recurse -File -Filter "Everything.exe" | Select-Object -First 1
           Copy-Item $es.FullName "$pkg\tools\es.exe" -Force
@@ -240,27 +189,16 @@ jobs:
           ) | Set-Content -Encoding ASCII "$pkg\SHA256SUMS.txt"
 
           Compress-Archive -Path "$pkg\*" -DestinationPath "FileCheck-v0.1.1-gui-win7-x64.zip" -Force
-          $assetHash = (Get-FileHash "FileCheck-v0.1.1-gui-win7-x64.zip" -Algorithm SHA256).Hash
-          Write-Host "GUI package SHA-256: $assetHash"
+          Write-Host "GUI package SHA-256: $((Get-FileHash 'FileCheck-v0.1.1-gui-win7-x64.zip' -Algorithm SHA256).Hash)"
 
       - name: Validate assembled package
         shell: pwsh
         run: |
           $verifyDir = Join-Path $env:RUNNER_TEMP "filecheck-gui-win7-check"
           Expand-Archive "FileCheck-v0.1.1-gui-win7-x64.zip" -DestinationPath $verifyDir -Force
-          foreach ($relative in @(
-            "FileCheck-GUI.exe",
-            "app\FileCheck-GUI-runtime.exe",
-            "advanced\FileCheck.exe",
-            "tools\es.exe",
-            "tools\Everything.exe",
-            "config\rules.json",
-            "README.txt",
-            "SHA256SUMS.txt"
-          )) {
+          foreach ($relative in @("FileCheck-GUI.exe", "app\FileCheck-GUI-runtime.exe", "advanced\FileCheck.exe", "tools\es.exe", "tools\Everything.exe", "config\rules.json", "README.txt", "SHA256SUMS.txt")) {
             if (-not (Test-Path (Join-Path $verifyDir $relative))) { throw "Package file missing: $relative" }
           }
-
           Push-Location $env:TEMP
           try {
             & (Join-Path $verifyDir "advanced\FileCheck.exe") selftest | Out-Host
@@ -268,9 +206,7 @@ jobs:
             & (Join-Path $verifyDir "FileCheck-GUI.exe") --smoke-test
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
-          finally {
-            Pop-Location
-          }
+          finally { Pop-Location }
 
       - name: Upload portable GUI artifact
         uses: actions/upload-artifact@v4
