@@ -1,0 +1,187 @@
+name: Build GUI Win7 x64
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - chore/vendor-everything
+      - feat/gui-customtkinter
+    paths:
+      - "README.md"
+      - "src/**"
+      - "config/**"
+      - "packaging/**"
+      - "vendor/everything/**"
+      - "tests/**"
+      - "pyproject.toml"
+      - ".github/workflows/build-gui-win7-x64.yml"
+
+jobs:
+  build-gui-win7-x64:
+    runs-on: windows-latest
+
+    env:
+      PYTHONPATH: src
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.8.10 x64
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.8.10"
+          architecture: "x64"
+
+      - name: Verify Python runtime
+        shell: pwsh
+        run: |
+          python -c "import platform,sys; print(sys.version); print(platform.architecture()); assert sys.version_info[:2] == (3, 8); assert platform.architecture()[0] == '64bit'"
+
+      - name: Install Win7-compatible GUI build dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade "pip<25" "setuptools<76" "wheel<0.46"
+          python -m pip install "colorama==0.4.6" "pytest==7.4.4" "pyinstaller==5.13.2" "customtkinter==5.2.2" "darkdetect==0.8.0" "packaging==24.2"
+
+      - name: Compile all source with Python 3.8
+        shell: pwsh
+        run: |
+          python -m compileall -q src packaging/filecheck_entry.py packaging/filecheck_gui_entry.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Run regression tests
+        shell: pwsh
+        run: |
+          python -m pytest -q
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python packaging/filecheck_entry.py selftest
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Build advanced CLI executable
+        shell: pwsh
+        run: |
+          $ctkIcon = python -c "import pathlib,customtkinter; print(pathlib.Path(customtkinter.__file__).resolve().parent / 'assets' / 'icons' / 'CustomTkinter_icon_Windows.ico')"
+          if (-not (Test-Path $ctkIcon)) { throw "CustomTkinter Windows icon not found: $ctkIcon" }
+          pyinstaller --noconfirm --clean --onefile --console --name FileCheck --icon "$ctkIcon" --paths src --add-data "config/rules.json;config" packaging/filecheck_entry.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Build GUI runtime onedir bundle
+        shell: pwsh
+        run: |
+          $ctkPath = python -c "import pathlib,customtkinter; print(pathlib.Path(customtkinter.__file__).resolve().parent)"
+          $ctkIcon = Join-Path $ctkPath "assets\icons\CustomTkinter_icon_Windows.ico"
+          if (-not (Test-Path $ctkIcon)) { throw "CustomTkinter Windows icon not found: $ctkIcon" }
+          pyinstaller --noconfirm --clean --onedir --windowed --name FileCheck-GUI-runtime --icon "$ctkIcon" --paths src --hidden-import darkdetect --add-data "config/rules.json;config" --add-data "$ctkPath;customtkinter" packaging/filecheck_gui_entry.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Build native root GUI launcher and verify icon
+        shell: pwsh
+        run: |
+          $ctkIcon = python -c "import pathlib,customtkinter; print(pathlib.Path(customtkinter.__file__).resolve().parent / 'assets' / 'icons' / 'CustomTkinter_icon_Windows.ico')"
+          if (-not (Test-Path $ctkIcon)) { throw "CustomTkinter Windows icon not found: $ctkIcon" }
+          Copy-Item $ctkIcon "packaging\FileCheck.ico" -Force
+          '1 ICON "packaging\FileCheck.ico"' | Set-Content -Encoding ASCII "packaging\gui_launcher.rc"
+
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (-not (Test-Path $vswhere)) { throw "vswhere.exe not found" }
+          $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vs) { throw "Visual C++ build tools not found" }
+          $vcvars = Join-Path $vs "VC\Auxiliary\Build\vcvars64.bat"
+          if (-not (Test-Path $vcvars)) { throw "vcvars64.bat not found" }
+          cmd /c "`"$vcvars`" && rc /nologo /fo dist\gui_launcher.res packaging\gui_launcher.rc && cl /nologo /O2 /MT /DUNICODE /D_UNICODE /Fe:dist\FileCheck-GUI.exe packaging\gui_launcher.c dist\gui_launcher.res /link /SUBSYSTEM:WINDOWS shell32.lib user32.lib"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (-not (Test-Path "dist\FileCheck-GUI.exe")) { throw "native FileCheck-GUI.exe was not produced" }
+
+          # Use the exact same icon-writing code path that PyInstaller uses for
+          # FileCheck.exe. PyInstaller 5.13 requires its standalone utility
+          # context to have workpath/specpath initialized first.
+          $env:FILECHECK_SHARED_ICON = $ctkIcon
+          python -c "import os; from PyInstaller import config; config.CONF['workpath']=os.getcwd(); config.CONF['specpath']=os.getcwd(); from PyInstaller.utils.win32.icon import CopyIcons; CopyIcons(r'dist\FileCheck-GUI.exe', os.environ['FILECHECK_SHARED_ICON'])"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          Add-Type -AssemblyName System.Drawing
+          function Get-ExeIconHash([string]$Path, [string]$Name) {
+            $resolved = (Resolve-Path $Path).Path
+            $icon = [System.Drawing.Icon]::ExtractAssociatedIcon($resolved)
+            if ($null -eq $icon) { throw "Unable to extract icon from $Path" }
+            $bitmap = $icon.ToBitmap()
+            $png = Join-Path $env:RUNNER_TEMP "$Name.png"
+            try { $bitmap.Save($png, [System.Drawing.Imaging.ImageFormat]::Png) }
+            finally { $bitmap.Dispose(); $icon.Dispose() }
+            return (Get-FileHash $png -Algorithm SHA256).Hash
+          }
+          $cliIconHash = Get-ExeIconHash "dist\FileCheck.exe" "filecheck-cli-icon"
+          $guiIconHash = Get-ExeIconHash "dist\FileCheck-GUI.exe" "filecheck-gui-icon"
+          Write-Host "CLI icon hash: $cliIconHash"
+          Write-Host "GUI icon hash: $guiIconHash"
+          if ($cliIconHash -ne $guiIconHash) { throw "FileCheck-GUI.exe icon does not match FileCheck.exe" }
+
+      - name: Smoke test raw executables
+        shell: pwsh
+        run: |
+          .\dist\FileCheck.exe selftest
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          .\dist\FileCheck-GUI-runtime\FileCheck-GUI-runtime.exe --smoke-test
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Verify vendored official ES and Everything
+        shell: pwsh
+        run: |
+          & .\packaging\verify_vendored_tools.ps1 -Arch x64
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Assemble portable GUI package
+        shell: pwsh
+        run: |
+          $pkg = "package\FileCheck-GUI-win7-x64"
+          foreach ($dir in @($pkg, "$pkg\app", "$pkg\config", "$pkg\tools", "$pkg\advanced")) { New-Item -ItemType Directory -Force $dir | Out-Null }
+          Copy-Item "dist\FileCheck-GUI.exe" "$pkg\FileCheck-GUI.exe" -Force
+          Copy-Item "dist\FileCheck-GUI-runtime\*" "$pkg\app" -Recurse -Force
+          Copy-Item "dist\FileCheck.exe" "$pkg\advanced\FileCheck.exe" -Force
+          Copy-Item "README.md" "$pkg\README.md" -Force
+          Copy-Item "config\rules.json" "$pkg\config\rules.json" -Force
+          Copy-Item "packaging\THIRD-PARTY-NOTICES.txt" "$pkg\THIRD-PARTY-NOTICES.txt" -Force
+          Copy-Item "vendor\everything\x64\es.exe" "$pkg\tools\es.exe" -Force
+          Copy-Item "vendor\everything\x64\Everything.exe" "$pkg\tools\Everything.exe" -Force
+
+          $guiHash = (Get-FileHash "$pkg\FileCheck-GUI.exe" -Algorithm SHA256).Hash
+          $runtimeHash = (Get-FileHash "$pkg\app\FileCheck-GUI-runtime.exe" -Algorithm SHA256).Hash
+          $cliHash = (Get-FileHash "$pkg\advanced\FileCheck.exe" -Algorithm SHA256).Hash
+          $everythingHash = (Get-FileHash "$pkg\tools\Everything.exe" -Algorithm SHA256).Hash
+          $esHash = (Get-FileHash "$pkg\tools\es.exe" -Algorithm SHA256).Hash
+          @(
+            "FileCheck-GUI.exe  $guiHash",
+            "app\FileCheck-GUI-runtime.exe  $runtimeHash",
+            "advanced\FileCheck.exe  $cliHash",
+            "tools\Everything.exe  $everythingHash",
+            "tools\es.exe  $esHash"
+          ) | Set-Content -Encoding ASCII "$pkg\SHA256SUMS.txt"
+
+          Compress-Archive -Path "$pkg\*" -DestinationPath "FileCheck-v0.1.1-gui-win7-x64.zip" -Force
+          Write-Host "GUI package SHA-256: $((Get-FileHash 'FileCheck-v0.1.1-gui-win7-x64.zip' -Algorithm SHA256).Hash)"
+
+      - name: Validate assembled package
+        shell: pwsh
+        run: |
+          $verifyDir = Join-Path $env:RUNNER_TEMP "filecheck-gui-win7-check"
+          Expand-Archive "FileCheck-v0.1.1-gui-win7-x64.zip" -DestinationPath $verifyDir -Force
+          foreach ($relative in @("FileCheck-GUI.exe", "app\FileCheck-GUI-runtime.exe", "advanced\FileCheck.exe", "tools\es.exe", "tools\Everything.exe", "config\rules.json", "README.md", "SHA256SUMS.txt")) {
+            if (-not (Test-Path (Join-Path $verifyDir $relative))) { throw "Package file missing: $relative" }
+          }
+          Push-Location $env:TEMP
+          try {
+            & (Join-Path $verifyDir "advanced\FileCheck.exe") selftest | Out-Host
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            & (Join-Path $verifyDir "FileCheck-GUI.exe") --smoke-test
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          finally { Pop-Location }
+
+      - name: Upload portable GUI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: FileCheck-v0.1.1-gui-win7-x64
+          path: FileCheck-v0.1.1-gui-win7-x64.zip
+          if-no-files-found: error
+          retention-days: 30
