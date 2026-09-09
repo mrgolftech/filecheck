@@ -66,7 +66,7 @@ jobs:
                   f'          & .\\packaging\\verify_vendored_tools.ps1 -Arch {arch}\n'
                   '          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }\n\n'
               )
-              text, count = pattern.subn(replacement, text, count=1)
+              text, count = pattern.subn(lambda _m: replacement, text, count=1)
               if count != 1:
                   raise SystemExit(f'failed to replace download step in {path}')
 
