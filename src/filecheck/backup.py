@@ -21,6 +21,7 @@ ProgressCallback = Callable[[str, int, int, str], None]
 _MIN_FREE_RESERVE = 16 * 1024 * 1024
 _MAX_FREE_RESERVE = 512 * 1024 * 1024
 _IO_CHUNK_SIZE = 8 * 1024 * 1024
+_TEMP_TOKEN_HEX = 16
 
 
 def _notify(progress: ProgressCallback | None, stage: str, current: int, total: int, path: str | Path) -> None:
@@ -210,9 +211,23 @@ def _source_snapshot_changed(before: os.stat_result, after: os.stat_result, copi
     return bool(before_ctime is not None and after_ctime is not None and before_ctime != after_ctime)
 
 
+def _compact_temp_name(role: str) -> str:
+    """Return a short hidden temp name for atomic same-directory operations.
+
+    Repeating the original file name in the temporary name can push otherwise
+    valid Win7 paths over MAX_PATH.  Keep the temp component fixed-size while
+    retaining enough randomness to make collisions negligible.
+    """
+    return f".fc-{role}-{uuid.uuid4().hex[:_TEMP_TOKEN_HEX]}.part"
+
+
+def _atomic_temp_path(target: Path, role: str) -> Path:
+    return target.parent / _compact_temp_name(role)
+
+
 def _atomic_copy_to_backup(source: Path, target: Path) -> tuple[str, os.stat_result]:
     target.parent.mkdir(parents=True, exist_ok=True)
-    temp = target.with_name(f".{target.name}.{uuid.uuid4().hex}.part")
+    temp = _atomic_temp_path(target, "b")
     before = source.stat()
     try:
         source_hash, copied = _copy_source_to_temp_with_hash(source, temp)
@@ -305,7 +320,7 @@ def _resolve_conflict(path: Path, mode: str) -> Path | None:
 
 
 def _restore_temp_path(target: Path) -> Path:
-    return target.parent / f".{target.name}.filecheck-restore-{uuid.uuid4().hex}.part"
+    return _atomic_temp_path(target, "r")
 
 
 def _finish_atomic_restore(temp: Path, target: Path, item: dict) -> None:
