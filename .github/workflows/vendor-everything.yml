@@ -107,7 +107,7 @@ jobs:
             if ((Get-PeMachine $esExe.FullName) -ne $target.Machine) { throw "es.exe PE architecture mismatch for $arch" }
             $version = (& $esExe.FullName -version | Out-String).Trim()
             Write-Host "ES $arch version: $version"
-            if ($version -notmatch '1\.1\.0\.37') { throw "Unexpected ES version for $arch: $version" }
+            if ($version -notmatch '1\.1\.0\.37') { throw "Unexpected ES version for ${arch}: $version" }
             Copy-Item $esExe.FullName (Join-Path $vendor 'es.exe') -Force
           }
 
