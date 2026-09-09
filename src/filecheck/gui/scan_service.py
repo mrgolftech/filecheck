@@ -5,9 +5,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List
 
-from filecheck import backup, cli, db_persistence
+from filecheck import cli, db_persistence
 from filecheck.everything import FILECHECK_INSTANCE, scan_keywords
 from filecheck.portable_everything import load_index_state
+from filecheck.scan_guard import filter_protected_backup_items
 from filecheck.util import now_iso, program_dir, write_json
 
 from .settings_service import current_backup_root
@@ -69,23 +70,6 @@ def load_context() -> ScanContextInfo:
     )
 
 
-def _filter_protected_backup_items(items: List[Dict[str, Any]]) -> tuple[List[Dict[str, Any]], List[str]]:
-    kept: List[Dict[str, Any]] = []
-    protected_batches: set[str] = set()
-    cache: dict[str, Path | None] = {}
-    for item in items:
-        path_text = str(item.get("path") or "").strip()
-        if not path_text:
-            kept.append(item)
-            continue
-        batch = backup.find_containing_backup_batch(path_text, cache=cache)
-        if batch is None:
-            kept.append(item)
-        else:
-            protected_batches.add(str(batch))
-    return kept, sorted(protected_batches, key=str.lower)
-
-
 def run_scan(request: ScanRequest, task: TaskContext) -> ScanResult:
     task.log("正在读取扫描规则和专用索引状态……")
     rules_path = Path(cli._default_rules_path()).expanduser().resolve()
@@ -116,17 +100,19 @@ def run_scan(request: ScanRequest, task: TaskContext) -> ScanResult:
     task.log(f"Everything {status.everything_version} / ES {status.es_version}")
     task.set_progress(None, "正在按关键词查询专用索引……")
 
-    raw_items = scan_keywords(
-        rules["keywords"],
-        rules["extensions"],
-        max_results_per_keyword=int(rules.get("max_results_per_keyword", 100000)),
-        match_path=bool(request.match_path),
-        path_prefix=None,
-        instance=FILECHECK_INSTANCE,
-        exclude_roots=exclusions,
+    raw_items = list(
+        scan_keywords(
+            rules["keywords"],
+            rules["extensions"],
+            max_results_per_keyword=int(rules.get("max_results_per_keyword", 100000)),
+            match_path=bool(request.match_path),
+            path_prefix=None,
+            instance=FILECHECK_INSTANCE,
+            exclude_roots=exclusions,
+        )
     )
     task.raise_if_cancelled()
-    items, protected_batches = _filter_protected_backup_items(list(raw_items))
+    items, protected_batches = filter_protected_backup_items(raw_items)
     excluded_backup_items = len(raw_items) - len(items)
     task.log(f"关键词查询完成，共发现 {len(raw_items)} 个原始候选文件。")
     if excluded_backup_items:
