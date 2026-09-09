@@ -6,6 +6,7 @@ on:
     branches:
       - release/win7-x64-work
       - feat/v0.1.1-cli-workflow
+      - feat/gui-customtkinter
       - main
     paths:
       - "README.md"
