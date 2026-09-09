@@ -1,0 +1,152 @@
+name: Vendor Everything binaries
+
+on:
+  push:
+    branches:
+      - chore/vendor-everything
+    paths:
+      - ".github/workflows/vendor-everything.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  vendor:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: chore/vendor-everything
+
+      - name: Prepare official Everything and ES binaries
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $targets = @(
+            @{
+              Arch = 'x64'
+              Machine = 0x8664
+              EverythingUrl = 'https://www.voidtools.com/Everything-1.4.1.1032.x64.zip'
+              EverythingZip = 'Everything-1.4.1.1032.x64.zip'
+              EverythingZipSha256 = '698DF475EC44E638F66F1B6A32D28FEA613CEC78D3B6310E6ABE53431EEB940C'
+              EsUrl = 'https://github.com/voidtools/ES/releases/download/1.1.0.37/ES-1.1.0.37.x64.zip'
+              EsZip = 'ES-1.1.0.37.x64.zip'
+              EsZipSha256 = '7A57670D9152068D05876C58858C82FE6D3915A9DF2C819F4DE8801E2929D3A7'
+            },
+            @{
+              Arch = 'x86'
+              Machine = 0x014C
+              EverythingUrl = 'https://www.voidtools.com/Everything-1.4.1.1032.x86.zip'
+              EverythingZip = 'Everything-1.4.1.1032.x86.zip'
+              EverythingZipSha256 = '156DB5BEB747D69470518A7B9B55AF11EFC4D3285DDB7CC013C0CC13CED5F237'
+              EsUrl = 'https://github.com/voidtools/ES/releases/download/1.1.0.37/ES-1.1.0.37.x86.zip'
+              EsZip = 'ES-1.1.0.37.x86.zip'
+              EsZipSha256 = '35F8FE8C92B44D834CF51239EE345927E44D33C6C86D64B756990B066FA0DA47'
+            }
+          )
+
+          function Invoke-DownloadWithRetry {
+            param(
+              [Parameter(Mandatory=$true)][string]$Uri,
+              [Parameter(Mandatory=$true)][string]$OutFile,
+              [int]$Attempts = 4
+            )
+            for ($i = 1; $i -le $Attempts; $i++) {
+              try {
+                Remove-Item -LiteralPath $OutFile -Force -ErrorAction SilentlyContinue
+                Write-Host "Download attempt $i/$Attempts : $Uri"
+                Invoke-WebRequest -Uri $Uri -OutFile $OutFile -TimeoutSec 120
+                if (-not (Test-Path -LiteralPath $OutFile)) { throw "No output file: $OutFile" }
+                return
+              }
+              catch {
+                if ($i -eq $Attempts) { throw }
+                Start-Sleep -Seconds (5 * $i)
+              }
+            }
+          }
+
+          function Get-PeMachine([string]$Path) {
+            $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path $Path))
+            if ($bytes.Length -lt 64) { throw "Invalid PE file: $Path" }
+            $peOffset = [BitConverter]::ToInt32($bytes, 0x3C)
+            return [BitConverter]::ToUInt16($bytes, $peOffset + 4)
+          }
+
+          foreach ($target in $targets) {
+            $arch = $target.Arch
+            $vendor = "vendor\everything\$arch"
+            $tmp = "vendor-temp\$arch"
+            New-Item -ItemType Directory -Force $vendor, $tmp | Out-Null
+
+            Invoke-DownloadWithRetry -Uri $target.EverythingUrl -OutFile (Join-Path $tmp $target.EverythingZip)
+            $everythingZipPath = Join-Path $tmp $target.EverythingZip
+            $actual = (Get-FileHash $everythingZipPath -Algorithm SHA256).Hash
+            if ($actual -ne $target.EverythingZipSha256) {
+              throw "Everything $arch archive SHA-256 mismatch. expected=$($target.EverythingZipSha256) actual=$actual"
+            }
+            $everythingExtract = Join-Path $tmp 'everything'
+            Expand-Archive $everythingZipPath -DestinationPath $everythingExtract -Force
+            $everythingExe = Get-ChildItem $everythingExtract -Recurse -File -Filter 'Everything.exe' | Select-Object -First 1
+            if (-not $everythingExe) { throw "Everything.exe not found for $arch" }
+            if ((Get-PeMachine $everythingExe.FullName) -ne $target.Machine) { throw "Everything.exe PE architecture mismatch for $arch" }
+            Copy-Item $everythingExe.FullName (Join-Path $vendor 'Everything.exe') -Force
+
+            Invoke-DownloadWithRetry -Uri $target.EsUrl -OutFile (Join-Path $tmp $target.EsZip)
+            $esZipPath = Join-Path $tmp $target.EsZip
+            $actual = (Get-FileHash $esZipPath -Algorithm SHA256).Hash
+            if ($actual -ne $target.EsZipSha256) {
+              throw "ES $arch archive SHA-256 mismatch. expected=$($target.EsZipSha256) actual=$actual"
+            }
+            $esExtract = Join-Path $tmp 'es'
+            Expand-Archive $esZipPath -DestinationPath $esExtract -Force
+            $esExe = Get-ChildItem $esExtract -Recurse -File -Filter 'es.exe' | Select-Object -First 1
+            if (-not $esExe) { throw "es.exe not found for $arch" }
+            if ((Get-PeMachine $esExe.FullName) -ne $target.Machine) { throw "es.exe PE architecture mismatch for $arch" }
+            $version = (& $esExe.FullName -version | Out-String).Trim()
+            Write-Host "ES $arch version: $version"
+            if ($version -notmatch '1\.1\.0\.37') { throw "Unexpected ES version for $arch: $version" }
+            Copy-Item $esExe.FullName (Join-Path $vendor 'es.exe') -Force
+          }
+
+          Remove-Item -LiteralPath 'Everything.exe' -Force -ErrorAction SilentlyContinue
+          Remove-Item -LiteralPath 'es.exe' -Force -ErrorAction SilentlyContinue
+          Remove-Item -LiteralPath 'vendor-temp' -Recurse -Force -ErrorAction SilentlyContinue
+
+          $lines = @()
+          foreach ($arch in @('x64','x86')) {
+            foreach ($name in @('Everything.exe','es.exe')) {
+              $path = "vendor\everything\$arch\$name"
+              $hash = (Get-FileHash $path -Algorithm SHA256).Hash.ToLowerInvariant()
+              $lines += "$hash  $($path -replace '\\','/')"
+            }
+          }
+          $lines | Set-Content -Encoding ASCII 'vendor\everything\SHA256SUMS.txt'
+
+          @'
+          # Vendored Everything binaries
+
+          FileCheck pins the official portable binaries required by its Windows packages so release builds do not depend on live upstream downloads.
+
+          - Everything: 1.4.1.1032 portable, x64 and x86
+          - ES: 1.1.0.37, x64 and x86
+          - Source: voidtools official downloads / voidtools ES GitHub releases
+          - `SHA256SUMS.txt` records the exact committed executable hashes.
+
+          Build workflows must verify these hashes and PE architecture before packaging.
+          '@ | Set-Content -Encoding UTF8 'vendor\everything\README.md'
+
+      - name: Commit vendored binaries
+        shell: pwsh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A vendor/everything Everything.exe es.exe
+          if (git diff --cached --quiet) {
+            Write-Host 'Vendored binaries already match the pinned official files.'
+            exit 0
+          }
+          git commit -m "chore(vendor): pin Everything and ES binaries"
+          git push origin HEAD:chore/vendor-everything
