@@ -5,6 +5,8 @@ from typing import Dict, Optional
 
 import customtkinter as ctk
 
+from filecheck.extension_scan import normalize_extensions
+
 from .backup_page import BackupPage
 from .backup_service import BackupPreflight, BackupRequest, BackupResult, preflight_backup, run_backup, suggested_destination
 from .components import SidebarButton, StatusPill
@@ -258,13 +260,28 @@ class FileCheckApp(ctk.CTk):
         page.begin_index()
         self.set_status("正在创建 FileCheck 专用索引", "info")
 
-    def _start_scan(self) -> None:
+    def _start_scan(self, mode: str = "keywords", extensions_text: str = "") -> None:
         page = self._pages.get("scan")
         if not isinstance(page, ScanPage) or self._busy():
             self.set_status("已有后台任务正在运行", "warning")
             return
+        if mode not in ("keywords", "extensions"):
+            self.set_status("扫描模式无效", "danger")
+            return
+        try:
+            selected = tuple(normalize_extensions(extensions_text)) if mode == "extensions" else ()
+        except ValueError as exc:
+            page.finish_error(str(exc), invalidate_index=False)
+            self.set_status(str(exc), "danger")
+            return
+        self._last_scan_result = None
+        self._last_backup_preflight = None
+        backup_page = self._pages.get("backup")
+        if isinstance(backup_page, BackupPage):
+            backup_page.clear_scan_result("扫描模式或规则已变化，请等待最新扫描完成。")
+        request = ScanRequest(mode=mode, extensions=selected)
         self._active_task = "scan"
-        if not self._task_runner.start("扫描", lambda task: run_scan(ScanRequest(), task)):
+        if not self._task_runner.start("扫描", lambda task: run_scan(request, task)):
             self._active_task = None
             return
         page.begin_scan()
@@ -545,7 +562,7 @@ class FileCheckApp(ctk.CTk):
 
         if event.kind == "cancelled":
             if active in ("index", "scan") and isinstance(scan_page, ScanPage):
-                scan_page.finish_cancelled()
+                scan_page.finish_cancelled(invalidate_index=(active == "index"))
                 self._refresh_scan_context()
             elif active in ("backup_preflight", "backup") and isinstance(backup_page, BackupPage):
                 backup_page.finish_cancelled()
@@ -566,7 +583,7 @@ class FileCheckApp(ctk.CTk):
         if event.kind == "error":
             message = event.message or "未知错误"
             if active in ("index", "scan") and isinstance(scan_page, ScanPage):
-                scan_page.finish_error(message)
+                scan_page.finish_error(message, invalidate_index=(active == "index"))
                 self._refresh_scan_context()
             elif active in ("backup_preflight", "backup") and isinstance(backup_page, BackupPage):
                 backup_page.finish_error(message)

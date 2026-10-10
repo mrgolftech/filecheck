@@ -30,7 +30,7 @@ class ResultPage(ctk.CTkFrame):
         PageHeader(
             self,
             "扫描结果",
-            "先查看结果摘要，再以完整 JSON/CSV 作为人工核对依据；关键词命中仅表示候选。",
+            "先查看结果摘要，再以完整 JSON/CSV 作为人工核对依据；扫描命中仅表示候选。",
         ).grid(row=0, column=0, sticky="ew")
         self.empty_state = EmptyState(self, "暂无扫描结果", "完成一次扫描后，这里将显示结果摘要和候选文件列表。")
         self.empty_state.grid(row=1, column=0, sticky="ew", pady=(Spacing.LG, 0))
@@ -115,7 +115,15 @@ class ResultPage(ctk.CTkFrame):
 
         inaccessible = result.inaccessible_count
         accessibility = f"注意：其中 {inaccessible} 个文件当前不可访问，整批备份会拒绝继续。" if inaccessible else "请人工核对后再进入“备份”。"
-        self.meta_label.configure(text=accessibility, text_color=Palette.WARNING if inaccessible else Palette.TEXT_SECONDARY)
+        mode = result.payload.get("scan_mode", "keywords")
+        mode_text = (
+            "仅按扩展名：" + "、".join("." + ext for ext in result.payload.get("selected_extensions", []))
+            if mode == "extensions" else "文件类型 + 关键词"
+        )
+        self.meta_label.configure(
+            text=f"本次模式：{mode_text}。{accessibility}",
+            text_color=Palette.WARNING if inaccessible else Palette.TEXT_SECONDARY,
+        )
         self.json_row.set_path(result.json_path)
         self.csv_row.set_path(result.csv_path)
 
@@ -150,11 +158,13 @@ class ResultPage(ctk.CTkFrame):
                 anchor="w",
             ).grid(row=0, column=0, sticky="ew")
             keywords = "、".join(str(value) for value in item.get("matched_keywords", []))
+            matched_extension = item.get("matched_extension")
+            matched = f"扩展名 .{matched_extension}" if matched_extension else (keywords or "-")
             size = item.get("size")
             size_text = _format_bytes(int(size)) if isinstance(size, int) else "大小未知"
             ctk.CTkLabel(
                 detail,
-                text=f"{path}\n命中：{keywords or '-'}    {size_text}",
+                text=f"{path}\n命中：{matched}    {size_text}",
                 text_color=Palette.TEXT_SECONDARY,
                 font=Typography.SMALL,
                 anchor="w",
