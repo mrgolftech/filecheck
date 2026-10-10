@@ -2,27 +2,31 @@
 
 FileCheck 是一个面向 Windows 终端的离线文件自查、备份与恢复工具，用于完成：**快速索引 → 关键词+文件类型扫描 / 指定扩展名扫描 → 人工核对 → 批量目录备份 → 完整性验证 → 源文件安全删除 → 按原路径恢复**。
 
-当前正式版本：**v0.2.3**。
+当前版本：**v0.2.4**（详见 [GitHub Releases](https://github.com/mrgolftech/filecheck/releases)；下载已发布版本）。
 
 FileCheck 同时提供 **GUI 图形界面** 和 **CLI 命令行**。两种入口共用同一套核心逻辑、扫描规则、Everything 专用索引、备份格式和 SHA-256 校验机制。
 
 > **推荐流程：正式操作前人工清理 → 设置统一备份根目录 → 创建/更新专用 Everything 索引 → 扫描候选 → 人工核对 → 创建目录备份 → 检查备份 → 按需单独执行源文件删除 → 必要时恢复。**
 >
-> `scan` 和 `backup` 永远不会自动删除源文件。关键词命中只表示“候选”，不代表违规或最终分类结论。
+> `scan` 和 `backup` 永远不会自动删除源文件。扫描命中只表示“候选”，不代表违规或最终分类结论。
 
-## v0.2.3 发布包
+## v0.2.4 发布包
 
 正式 Release 提供 3 个便携包：
 
-- `FileCheck-v0.2.3-gui-x64.zip`：GUI 完整版，面向 Windows 7 SP1 / Windows 10 / Windows 11 64 位，**普通用户推荐**；包内同时包含 x64 CLI。
-- `FileCheck-v0.2.3-cli-x64.zip`：纯命令行版，面向 Windows 7 SP1 / Windows 10 / Windows 11 64 位。
-- `FileCheck-v0.2.3-cli-x86.zip`：纯命令行兼容版，面向 Windows 7 SP1 32 位。
+- `FileCheck-v0.2.4-gui-x64.zip`：GUI 完整版，面向 Windows 7 SP1 / Windows 10 / Windows 11 64 位，**普通用户推荐**；包内同时包含 x64 CLI。
+- `FileCheck-v0.2.4-cli-x64.zip`：纯命令行版，面向 Windows 7 SP1 / Windows 10 / Windows 11 64 位。
+- `FileCheck-v0.2.4-cli-x86.zip`：纯命令行兼容版，面向 Windows 7 SP1 32 位。
 
 所有便携包均内置对应架构的 Everything 和 ES，解压后即可运行，不需要安装 Python，也不要求系统预先安装 Everything。
 
 > GUI/x64 CLI 使用 Python 3.8.10 x64 + PyInstaller 5.13.2 的 Windows 7 兼容构建基线；x86 CLI 使用 Python 3.8.10 x86 + PyInstaller 5.13.2。CI 会执行 Python 3.8 兼容、完整回归、现代 Windows GUI 构造、EXE smoke test 和最终 ZIP 校验。正式部署到具体 Windows 7 机器前，仍建议在目标环境做一次实际运行验证。
 
-## v0.2.3 修复说明
+## v0.2.4 新增功能
+
+新增「文件类型 + 关键词」与「仅按扩展名」双模式扫描；界面支持直接编辑扩展名列表，CLI 支持 `scan --mode extensions --extensions ".pdf,docx,xlsx"`。原扫描、备份及恢复逻辑保持兼容。详见下文「双模式扫描与备份」。
+
+## v0.2.3 修复说明（历史版本）
 
 v0.2.3 对 v0.2.2 的历史备份保护机制做了进一步补完，并扩大 Everything 索引覆盖范围。
 
@@ -38,9 +42,9 @@ v0.2.2 已有的备份核心保护、删除预检保护、删除运行时硬保�
 
 | 使用场景 | 推荐包 |
 | --- | --- |
-| 日常人工操作、希望使用图形界面 | `FileCheck-v0.2.3-gui-x64.zip` |
-| 64 位 Windows 上脚本化、批处理或高级诊断 | `FileCheck-v0.2.3-cli-x64.zip` |
-| Windows 7 SP1 32 位旧机器 | `FileCheck-v0.2.3-cli-x86.zip` |
+| 日常人工操作、希望使用图形界面 | `FileCheck-v0.2.4-gui-x64.zip` |
+| 64 位 Windows 上脚本化、批处理或高级诊断 | `FileCheck-v0.2.4-cli-x64.zip` |
+| Windows 7 SP1 32 位旧机器 | `FileCheck-v0.2.4-cli-x86.zip` |
 
 GUI 包中的高级命令行入口位于：
 
@@ -87,7 +91,7 @@ filecheck backup --from-scan scan-results-extensions.json --dest "D:/FileCheckBa
 
 新结果在 JSON 中记录 `scan_mode` 与 `selected_extensions`，CSV 追加「命中扩展名」列。无效、空白或包含查询操作符的扩展名会被拒绝。单个扩展名达到规则文件 `max_results_per_keyword` 上限时**直接报错**而非截断候选，需缩小索引范围或提高上限。目标备份目录、程序目录及所有识别到的 FileCheck 历史备份批次仍排除。无论哪种模式，扫描和备份均不会自动删除源文件。
 
-> 本功能目前已经加入源码；请通过 GitHub Actions 运行测试后再构建新的便携包，不要将此变更误认为既有 v0.2.3 Release 已包含它。
+> 双模式功能自 v0.2.4 引入。旧版 v0.2.3 发布包不包含此功能。
 
 ## 核心特性
 
