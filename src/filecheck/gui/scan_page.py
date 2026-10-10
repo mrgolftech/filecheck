@@ -33,6 +33,7 @@ class ScanPage(ctk.CTkFrame):
         self._busy = False
         self.scan_mode = tk.StringVar(value="keywords")
         self._extensions_initialized = False
+        self._default_extensions = ""
 
         PageHeader(
             self,
@@ -92,12 +93,12 @@ class ScanPage(ctk.CTkFrame):
         )
         mode_row = ctk.CTkFrame(rules_card, fg_color="transparent")
         mode_row.grid(row=1, column=0, sticky="w", padx=Layout.CARD_PADDING, pady=(0, Spacing.SM))
-        ctk.CTkRadioButton(
+        self.mode_keyword_radio = ctk.CTkRadioButton(
             mode_row, text="文件类型 + 关键词（原模式）", variable=self.scan_mode,
             value="keywords", command=self._on_mode_changed,
             text_color=Palette.TEXT, fg_color=Palette.PRIMARY,
         ).pack(side="left")
-        ctk.CTkRadioButton(
+        self.mode_extension_radio = ctk.CTkRadioButton(
             mode_row, text="仅按扩展名", variable=self.scan_mode,
             value="extensions", command=self._on_mode_changed,
             text_color=Palette.TEXT, fg_color=Palette.PRIMARY,
@@ -108,12 +109,13 @@ class ScanPage(ctk.CTkFrame):
         ext_row.grid_columnconfigure(1, weight=1)
         ctk.CTkLabel(ext_row, text="备份扩展名：", text_color=Palette.TEXT_SECONDARY,
                      font=Typography.CAPTION).grid(row=0, column=0, sticky="w")
+        self.extensions_var = tk.StringVar()
         self.extensions_entry = ctk.CTkEntry(
-            ext_row, placeholder_text="例如：pdf, docx, xlsx, dwg",
+            ext_row, textvariable=self.extensions_var, placeholder_text="例如：pdf, docx, xlsx, dwg",
             text_color=Palette.TEXT, fg_color=Palette.SURFACE_SUBTLE,
         )
         self.extensions_entry.grid(row=0, column=1, sticky="ew", padx=(Spacing.SM, 0))
-        self.extensions_entry.bind("<KeyRelease>", self._extensions_changed)
+        self.extensions_var.trace_add("write", self._extensions_changed)
         self._on_mode_changed()
 
         self.rules_label = ctk.CTkLabel(
@@ -238,12 +240,15 @@ class ScanPage(ctk.CTkFrame):
             self.index_detail.configure(text="尚未建立 FileCheck 专用索引。", text_color=Palette.WARNING)
             self.progress_label.configure(text="等待创建索引", text_color=Palette.TEXT_SECONDARY)
 
-        if not self._extensions_initialized:
+        new_defaults = ", ".join(scan_info.extensions)
+        if not self._extensions_initialized or self.extensions_entry.get() == self._default_extensions:
             # CTkEntry ignores inserts while disabled (keywords is the default mode).
             self.extensions_entry.configure(state="normal")
-            self.extensions_entry.insert(0, ", ".join(scan_info.extensions))
+            self.extensions_entry.delete(0, "end")
+            self.extensions_entry.insert(0, new_defaults)
             self._extensions_initialized = True
             self._on_mode_changed()
+        self._default_extensions = new_defaults
         labels = {"high": "高风险", "sensitive": "敏感", "review": "复核"}
         groups = []
         for level, values in scan_info.keywords.items():
@@ -260,12 +265,14 @@ class ScanPage(ctk.CTkFrame):
     def _on_mode_changed(self) -> None:
         mode = self.scan_mode.get()
         if hasattr(self, "extensions_entry"):
-            self.extensions_entry.configure(state="normal" if mode == "extensions" else "disabled")
+            self.extensions_entry.configure(
+                state="normal" if mode == "extensions" and not self._busy else "disabled"
+            )
         if hasattr(self, "rules_label"):
             self._refresh_controls()
         self.winfo_toplevel().event_generate("<<FileCheckScanBasisChanged>>", when="tail")
 
-    def _extensions_changed(self, _event=None) -> None:
+    def _extensions_changed(self, *_args) -> None:
         if self.scan_mode.get() == "extensions":
             self._refresh_controls()
             self.winfo_toplevel().event_generate("<<FileCheckScanBasisChanged>>", when="tail")
@@ -364,6 +371,11 @@ class ScanPage(ctk.CTkFrame):
             check.configure(state=state if self._settings_ready else "disabled")
         self.index_button.configure(state="normal" if self._settings_ready and not self._busy else "disabled")
         self.settings_button.configure(state="disabled" if self._busy else "normal")
+        for radio in (self.mode_keyword_radio, self.mode_extension_radio):
+            radio.configure(state="disabled" if self._busy else "normal")
+        self.extensions_entry.configure(
+            state="normal" if not self._busy and self.scan_mode.get() == "extensions" else "disabled"
+        )
         extensions_ready = self.scan_mode.get() != "extensions" or bool(self.extensions_entry.get().strip())
         self.scan_button.configure(state="normal" if self._index_ready and extensions_ready and not self._busy else "disabled")
         self.cancel_button.configure(state="normal" if self._busy else "disabled")
