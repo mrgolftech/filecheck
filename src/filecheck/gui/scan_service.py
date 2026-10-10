@@ -7,6 +7,7 @@ from typing import Any, Dict, List
 
 from filecheck import cli, db_persistence
 from filecheck.everything import FILECHECK_INSTANCE, scan_keywords
+from filecheck.extension_scan import normalize_extensions, scan_extensions
 from filecheck.portable_everything import load_index_state
 from filecheck.scan_guard import filter_protected_backup_items
 from filecheck.util import now_iso, program_dir, write_json
@@ -29,6 +30,8 @@ class ScanContextInfo:
 @dataclass(frozen=True)
 class ScanRequest:
     match_path: bool = False
+    mode: str = "keywords"
+    extensions: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -72,6 +75,8 @@ def load_context() -> ScanContextInfo:
 
 def run_scan(request: ScanRequest, task: TaskContext) -> ScanResult:
     task.log("正在读取扫描规则和专用索引状态……")
+    if request.mode not in ("keywords", "extensions"):
+        raise ValueError("未知扫描模式，请选择关键词或扩展名")
     rules_path = Path(cli._default_rules_path()).expanduser().resolve()
     rules = cli._load_rules(rules_path)
     state = load_index_state(required=True)
@@ -98,23 +103,40 @@ def run_scan(request: ScanRequest, task: TaskContext) -> ScanResult:
     status = db_persistence.ensure_instance()
     task.raise_if_cancelled()
     task.log(f"Everything {status.everything_version} / ES {status.es_version}")
-    task.set_progress(None, "正在按关键词查询专用索引……")
-
-    raw_items = list(
-        scan_keywords(
-            rules["keywords"],
-            rules["extensions"],
-            max_results_per_keyword=int(rules.get("max_results_per_keyword", 100000)),
-            match_path=bool(request.match_path),
-            path_prefix=None,
-            instance=FILECHECK_INSTANCE,
-            exclude_roots=exclusions,
-        )
+    selected_extensions = (
+        normalize_extensions(request.extensions or rules["extensions"])
+        if request.mode == "extensions" else []
     )
+    task.set_progress(
+        None,
+        "正在按扩展名查询专用索引……" if request.mode == "extensions" else "正在按关键词查询专用索引……",
+    )
+    if request.mode == "extensions":
+        raw_items = list(
+            scan_extensions(
+                selected_extensions,
+                max_results_per_extension=int(rules.get("max_results_per_keyword", 100000)),
+                path_prefix=None,
+                instance=FILECHECK_INSTANCE,
+                exclude_roots=exclusions,
+            )
+        )
+    else:
+        raw_items = list(
+            scan_keywords(
+                rules["keywords"],
+                rules["extensions"],
+                max_results_per_keyword=int(rules.get("max_results_per_keyword", 100000)),
+                match_path=bool(request.match_path),
+                path_prefix=None,
+                instance=FILECHECK_INSTANCE,
+                exclude_roots=exclusions,
+            )
+        )
     task.raise_if_cancelled()
     items, protected_batches = filter_protected_backup_items(raw_items)
     excluded_backup_items = len(raw_items) - len(items)
-    task.log(f"关键词查询完成，共发现 {len(raw_items)} 个原始候选文件。")
+    task.log(f"{'扩展名' if request.mode == 'extensions' else '关键词'}查询完成，共发现 {len(raw_items)} 个原始候选文件。")
     if excluded_backup_items:
         task.log(
             f"已自动排除 {excluded_backup_items} 个位于历史 FileCheck 备份中的候选文件，"
@@ -140,7 +162,9 @@ def run_scan(request: ScanRequest, task: TaskContext) -> ScanResult:
         "excluded_backup_items": excluded_backup_items,
         "index_updated_at": state.get("updated_at"),
         "backup_root": backup_root,
-        "match_path": bool(request.match_path),
+        "scan_mode": request.mode,
+        "selected_extensions": selected_extensions if request.mode == "extensions" else list(rules["extensions"]),
+        "match_path": bool(request.match_path) if request.mode == "keywords" else False,
         "path_filter": None,
         "rules": cli._rules_metadata(rules_path),
         "items": items,
