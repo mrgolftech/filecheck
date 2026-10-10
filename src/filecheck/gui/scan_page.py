@@ -239,8 +239,11 @@ class ScanPage(ctk.CTkFrame):
             self.progress_label.configure(text="等待创建索引", text_color=Palette.TEXT_SECONDARY)
 
         if not self._extensions_initialized:
+            # CTkEntry ignores inserts while disabled (keywords is the default mode).
+            self.extensions_entry.configure(state="normal")
             self.extensions_entry.insert(0, ", ".join(scan_info.extensions))
             self._extensions_initialized = True
+            self._on_mode_changed()
         labels = {"high": "高风险", "sensitive": "敏感", "review": "复核"}
         groups = []
         for level, values in scan_info.keywords.items():
@@ -311,10 +314,11 @@ class ScanPage(ctk.CTkFrame):
         self.progress_bar.configure(mode="determinate")
         self.progress_bar.set(max(0.0, min(1.0, float(progress))))
 
-    def finish_error(self, message: str) -> None:
+    def finish_error(self, message: str, invalidate_index: bool = True) -> None:
         self._busy = False
-        self._index_ready = False
-        self.index_state.set_tone("danger", "索引不可用")
+        if invalidate_index:
+            self._index_ready = False
+            self.index_state.set_tone("danger", "索引不可用")
         self.progress_bar.stop()
         self.progress_bar.configure(mode="determinate")
         self.progress_bar.set(0)
@@ -322,10 +326,11 @@ class ScanPage(ctk.CTkFrame):
         self.append_log(f"错误：{message}")
         self._refresh_controls()
 
-    def finish_cancelled(self) -> None:
+    def finish_cancelled(self, invalidate_index: bool = True) -> None:
         self._busy = False
-        self._index_ready = False
-        self.index_state.set_tone("warning", "索引未完成")
+        if invalidate_index:
+            self._index_ready = False
+            self.index_state.set_tone("warning", "索引未完成")
         self.progress_bar.stop()
         self.progress_bar.configure(mode="determinate")
         self.progress_bar.set(0)
