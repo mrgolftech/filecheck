@@ -271,7 +271,7 @@ class FileCheckApp(ctk.CTk):
         try:
             selected = tuple(normalize_extensions(extensions_text)) if mode == "extensions" else ()
         except ValueError as exc:
-            page.finish_error(str(exc))
+            page.finish_error(str(exc), invalidate_index=False)
             self.set_status(str(exc), "danger")
             return
         self._last_scan_result = None
@@ -562,7 +562,7 @@ class FileCheckApp(ctk.CTk):
 
         if event.kind == "cancelled":
             if active in ("index", "scan") and isinstance(scan_page, ScanPage):
-                scan_page.finish_cancelled()
+                scan_page.finish_cancelled(invalidate_index=(active == "index"))
                 self._refresh_scan_context()
             elif active in ("backup_preflight", "backup") and isinstance(backup_page, BackupPage):
                 backup_page.finish_cancelled()
@@ -583,7 +583,7 @@ class FileCheckApp(ctk.CTk):
         if event.kind == "error":
             message = event.message or "未知错误"
             if active in ("index", "scan") and isinstance(scan_page, ScanPage):
-                scan_page.finish_error(message)
+                scan_page.finish_error(message, invalidate_index=(active == "index"))
                 self._refresh_scan_context()
             elif active in ("backup_preflight", "backup") and isinstance(backup_page, BackupPage):
                 backup_page.finish_error(message)
