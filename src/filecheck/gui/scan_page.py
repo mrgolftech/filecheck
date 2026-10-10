@@ -97,12 +97,14 @@ class ScanPage(ctk.CTkFrame):
             mode_row, text="文件类型 + 关键词（原模式）", variable=self.scan_mode,
             value="keywords", command=self._on_mode_changed,
             text_color=Palette.TEXT, fg_color=Palette.PRIMARY,
-        ).pack(side="left")
+        )
+        self.mode_keyword_radio.pack(side="left")
         self.mode_extension_radio = ctk.CTkRadioButton(
             mode_row, text="仅按扩展名", variable=self.scan_mode,
             value="extensions", command=self._on_mode_changed,
             text_color=Palette.TEXT, fg_color=Palette.PRIMARY,
-        ).pack(side="left", padx=(Spacing.LG, 0))
+        )
+        self.mode_extension_radio.pack(side="left", padx=(Spacing.LG, 0))
 
         ext_row = ctk.CTkFrame(rules_card, fg_color="transparent")
         ext_row.grid(row=2, column=0, sticky="ew", padx=Layout.CARD_PADDING, pady=(0, Spacing.SM))
