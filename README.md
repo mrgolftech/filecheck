@@ -1,6 +1,6 @@
 # FileCheck
 
-FileCheck 是一个面向 Windows 终端的离线文件自查、备份与恢复工具，用于完成：**快速索引 → 关键词扫描 → 人工核对 → 批量目录备份 → 完整性验证 → 源文件安全删除 → 按原路径恢复**。
+FileCheck 是一个面向 Windows 终端的离线文件自查、备份与恢复工具，用于完成：**快速索引 → 关键词+文件类型扫描 / 指定扩展名扫描 → 人工核对 → 批量目录备份 → 完整性验证 → 源文件安全删除 → 按原路径恢复**。
 
 当前正式版本：**v0.2.3**。
 
@@ -59,6 +59,35 @@ scan-results\
 ```
 
 不要把 `advanced\FileCheck.exe` 单独复制到别处运行，否则它将无法继续识别原便携包根目录。
+
+## 双模式扫描与备份（新功能）
+
+两种扫描模式 **互斥**，但都沿用 FileCheck 专用 Everything 索引、统一备份根目录、历史备份保护、JSON/CSV 扫描结果和备份预检、SHA-256 校验、恢复流程：
+
+- **模式一：文件类型 + 关键词（默认、兼容原流程）**。使用 `config/rules.json` 中的 `keywords` 和 `extensions` 的交集查找候选，按关键词给出高风险/敏感/复核等级。
+- **模式二：仅按扩展名**。不检查文件名是否包含关键词，只要文件后缀属于选定列表就成为候选；全部标为「复核」，**不将扩展名命中误判为敏感文件**。例如选择 `.pdf,.docx,.xlsx,.dwg` 会包括 `项目资料.pdf` 等没有关键词的文件。大小写不敏感、自动去重，仅匹配最后一个扩展名（不支持 `*.tar.gz` 多段匹配）。
+
+**GUI：** 在「扫描」页面选择「仅按扩展名」，在输入框中填写 `pdf, docx, xlsx`（支持带点、逗号、分号与空格分隔），点击「开始扫描」；在「扫描结果」核对清单，再到「备份」执行预检与备份。切换模式或修改输入会使旧备份候选失效，必须重新扫描。原模式的设置仍保留在「设置」页面，不受新模式影响。
+
+**CLI：** 先沿用 `index` 建立索引，再执行：
+
+```powershell
+# 默认：原有文件类型+关键词规则
+filecheck scan --output scan-results-keywords.json
+
+# 仅按所选扩展名，不要求关键词命中
+filecheck scan --mode extensions --extensions ".pdf,docx,xlsx,dwg" --output scan-results-extensions.json
+
+# 不传 --extensions 时使用 config/rules.json 的 extensions
+filecheck scan --mode extensions --output scan-results-extensions.json
+
+# 人工核对扫描结果后，仍使用原有备份命令
+filecheck backup --from-scan scan-results-extensions.json --dest "D:/FileCheckBackup"
+```
+
+新结果在 JSON 中记录 `scan_mode` 与 `selected_extensions`，CSV 追加「命中扩展名」列。无效、空白或包含查询操作符的扩展名会被拒绝。单个扩展名达到规则文件 `max_results_per_keyword` 上限时**直接报错**而非截断候选，需缩小索引范围或提高上限。目标备份目录、程序目录及所有识别到的 FileCheck 历史备份批次仍排除。无论哪种模式，扫描和备份均不会自动删除源文件。
+
+> 本功能目前已经加入源码；请通过 GitHub Actions 运行测试后再构建新的便携包，不要将此变更误认为既有 v0.2.3 Release 已包含它。
 
 ## 核心特性
 
