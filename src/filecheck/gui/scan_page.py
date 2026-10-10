@@ -15,7 +15,7 @@ class ScanPage(ctk.CTkFrame):
         self,
         master,
         on_build_index: Callable[[List[str]], None],
-        on_start_scan: Callable[[], None],
+        on_start_scan: Callable[[str, str], None],
         on_cancel: Callable[[], None],
         on_open_settings: Callable[[], None],
     ):
@@ -31,6 +31,8 @@ class ScanPage(ctk.CTkFrame):
         self._settings_ready = False
         self._index_ready = False
         self._busy = False
+        self.scan_mode = tk.StringVar(value="keywords")
+        self._extensions_initialized = False
 
         PageHeader(
             self,
@@ -88,6 +90,32 @@ class ScanPage(ctk.CTkFrame):
         ctk.CTkLabel(rules_card, text="2. 确认扫描规则并开始扫描", text_color=Palette.TEXT, font=Typography.CARD_TITLE, anchor="w").grid(
             row=0, column=0, sticky="w", padx=Layout.CARD_PADDING, pady=(Layout.CARD_PADDING, Spacing.SM)
         )
+        mode_row = ctk.CTkFrame(rules_card, fg_color="transparent")
+        mode_row.grid(row=1, column=0, sticky="w", padx=Layout.CARD_PADDING, pady=(0, Spacing.SM))
+        ctk.CTkRadioButton(
+            mode_row, text="文件类型 + 关键词（原模式）", variable=self.scan_mode,
+            value="keywords", command=self._on_mode_changed,
+            text_color=Palette.TEXT, fg_color=Palette.PRIMARY,
+        ).pack(side="left")
+        ctk.CTkRadioButton(
+            mode_row, text="仅按扩展名", variable=self.scan_mode,
+            value="extensions", command=self._on_mode_changed,
+            text_color=Palette.TEXT, fg_color=Palette.PRIMARY,
+        ).pack(side="left", padx=(Spacing.LG, 0))
+
+        ext_row = ctk.CTkFrame(rules_card, fg_color="transparent")
+        ext_row.grid(row=2, column=0, sticky="ew", padx=Layout.CARD_PADDING, pady=(0, Spacing.SM))
+        ext_row.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(ext_row, text="备份扩展名：", text_color=Palette.TEXT_SECONDARY,
+                     font=Typography.CAPTION).grid(row=0, column=0, sticky="w")
+        self.extensions_entry = ctk.CTkEntry(
+            ext_row, placeholder_text="例如：pdf, docx, xlsx, dwg",
+            text_color=Palette.TEXT, fg_color=Palette.SURFACE_SUBTLE,
+        )
+        self.extensions_entry.grid(row=0, column=1, sticky="ew", padx=(Spacing.SM, 0))
+        self.extensions_entry.bind("<KeyRelease>", self._extensions_changed)
+        self._on_mode_changed()
+
         self.rules_label = ctk.CTkLabel(
             rules_card,
             text="正在读取关键词和文件类型……",
@@ -97,9 +125,9 @@ class ScanPage(ctk.CTkFrame):
             justify="left",
             wraplength=620,
         )
-        self.rules_label.grid(row=1, column=0, sticky="ew", padx=Layout.CARD_PADDING)
+        self.rules_label.grid(row=3, column=0, sticky="ew", padx=Layout.CARD_PADDING)
         actions = ctk.CTkFrame(rules_card, fg_color="transparent")
-        actions.grid(row=2, column=0, sticky="w", padx=Layout.CARD_PADDING, pady=(Spacing.MD, Layout.CARD_PADDING))
+        actions.grid(row=4, column=0, sticky="w", padx=Layout.CARD_PADDING, pady=(Spacing.MD, Layout.CARD_PADDING))
         SecondaryButton(actions, "修改扫描设置", command=self._on_open_settings, width=130).pack(side="left")
         self.scan_button = PrimaryButton(actions, "开始扫描", command=self._start_scan, width=130, state="disabled")
         self.scan_button.pack(side="left", padx=(Spacing.SM, 0))
@@ -210,6 +238,9 @@ class ScanPage(ctk.CTkFrame):
             self.index_detail.configure(text="尚未建立 FileCheck 专用索引。", text_color=Palette.WARNING)
             self.progress_label.configure(text="等待创建索引", text_color=Palette.TEXT_SECONDARY)
 
+        if not self._extensions_initialized:
+            self.extensions_entry.insert(0, ", ".join(scan_info.extensions))
+            self._extensions_initialized = True
         labels = {"high": "高风险", "sensitive": "敏感", "review": "复核"}
         groups = []
         for level, values in scan_info.keywords.items():
@@ -222,6 +253,19 @@ class ScanPage(ctk.CTkFrame):
             )
         )
         self._refresh_controls()
+
+    def _on_mode_changed(self) -> None:
+        mode = self.scan_mode.get()
+        if hasattr(self, "extensions_entry"):
+            self.extensions_entry.configure(state="normal" if mode == "extensions" else "disabled")
+        if hasattr(self, "rules_label"):
+            self._refresh_controls()
+        self.winfo_toplevel().event_generate("<<FileCheckScanBasisChanged>>", when="tail")
+
+    def _extensions_changed(self, _event=None) -> None:
+        if self.scan_mode.get() == "extensions":
+            self._refresh_controls()
+            self.winfo_toplevel().event_generate("<<FileCheckScanBasisChanged>>", when="tail")
 
     def selected_roots(self) -> List[str]:
         return [root for root, var in self._drive_vars.items() if bool(var.get())]
@@ -315,14 +359,15 @@ class ScanPage(ctk.CTkFrame):
             check.configure(state=state if self._settings_ready else "disabled")
         self.index_button.configure(state="normal" if self._settings_ready and not self._busy else "disabled")
         self.settings_button.configure(state="disabled" if self._busy else "normal")
-        self.scan_button.configure(state="normal" if self._index_ready and not self._busy else "disabled")
+        extensions_ready = self.scan_mode.get() != "extensions" or bool(self.extensions_entry.get().strip())
+        self.scan_button.configure(state="normal" if self._index_ready and extensions_ready and not self._busy else "disabled")
         self.cancel_button.configure(state="normal" if self._busy else "disabled")
 
     def _build_index(self) -> None:
         self._on_build_index(self.selected_roots())
 
     def _start_scan(self) -> None:
-        self._on_start_scan()
+        self._on_start_scan(self.scan_mode.get(), self.extensions_entry.get().strip())
 
     def _cancel_task(self) -> None:
         self.progress_label.configure(text="已请求取消，正在等待安全检查点……", text_color=Palette.WARNING)
