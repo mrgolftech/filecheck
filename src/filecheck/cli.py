@@ -188,9 +188,11 @@ def cmd_scan(args: argparse.Namespace) -> int:
     exclusions = list(state.get("excluded_roots", []))
     print(f"使用 FileCheck 专用 Everything {status.everything_version} / ES {status.es_version}")
     print(f"索引范围: {', '.join(state.get('selected_roots', []))}")
-    mode = args.mode
+    # Preserve direct cmd_scan(Namespace(...)) callers written before dual-mode support.
+    mode = getattr(args, "mode", "keywords")
+    chosen_extensions = getattr(args, "extensions", None)
     selected_extensions = (
-        normalize_extensions(args.extensions if args.extensions is not None else rules["extensions"])
+        normalize_extensions(chosen_extensions if chosen_extensions is not None else rules["extensions"])
         if mode == "extensions" else []
     )
     print("正在按扩展名查询专用索引……" if mode == "extensions" else "正在按关键词查询专用索引……")
