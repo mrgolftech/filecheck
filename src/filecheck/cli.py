@@ -151,6 +151,8 @@ def _print_scan(items: list[dict], *, limit: int = 100) -> None:
         print(f"\n{_info(f'[{directory}]')}  ({len(rows)} 个已显示)")
         for index, item in rows:
             keywords = ", ".join(item["matched_keywords"])
+            if item.get("matched_extension"):
+                keywords = "扩展名 ." + str(item["matched_extension"])
             severity = _severity_text(item["severity"])
             print(f"  {index:>5}. [{severity}] {Path(item['path']).name}  {_paint(f'<{keywords}>', Fore.MAGENTA)}")
     if len(items) > len(display_rows):
