@@ -13,6 +13,7 @@ from colorama import Fore, Style, just_fix_windows_console
 
 from .backup import BackupError, create_backup, read_backup_manifest, restore_backup, verify_backup
 from .everything import FILECHECK_INSTANCE, EverythingError, find_es, scan_keywords
+from .extension_scan import normalize_extensions, scan_extensions
 from .migration import MigrationError, preflight_migration, remove_verified_sources, resume_migration
 from .portable_everything import (
     PortableEverythingError,
@@ -161,7 +162,7 @@ def _write_scan_csv(json_output: Path, items: list[dict]) -> Path:
     csv_path.parent.mkdir(parents=True, exist_ok=True)
     with csv_path.open("w", encoding="utf-8-sig", newline="") as fh:
         writer = csv.writer(fh)
-        writer.writerow(["序号", "源文件完整路径", "目录", "命中关键词", "级别", "大小(字节)", "当前可访问"])
+        writer.writerow(["序号", "源文件完整路径", "目录", "命中关键词", "级别", "大小(字节)", "当前可访问", "命中扩展名"])
         for index, item in enumerate(items, start=1):
             writer.writerow(
                 [
@@ -172,6 +173,7 @@ def _write_scan_csv(json_output: Path, items: list[dict]) -> Path:
                     item["severity"],
                     "" if item.get("size") is None else item["size"],
                     "是" if item.get("accessible") else "否",
+                    item.get("matched_extension", ""),
                 ]
             )
     return csv_path
@@ -184,19 +186,36 @@ def cmd_scan(args: argparse.Namespace) -> int:
     exclusions = list(state.get("excluded_roots", []))
     print(f"使用 FileCheck 专用 Everything {status.everything_version} / ES {status.es_version}")
     print(f"索引范围: {', '.join(state.get('selected_roots', []))}")
-    print("正在按关键词查询专用索引……")
-    raw_items = list(
-        scan_keywords(
-            rules["keywords"],
-            rules["extensions"],
-            es=args.es,
-            max_results_per_keyword=int(rules.get("max_results_per_keyword", 100000)),
-            match_path=args.match_path,
-            path_prefix=args.path,
-            instance=FILECHECK_INSTANCE,
-            exclude_roots=exclusions,
-        )
+    mode = args.mode
+    selected_extensions = (
+        normalize_extensions(args.extensions if args.extensions is not None else rules["extensions"])
+        if mode == "extensions" else []
     )
+    print("正在按扩展名查询专用索引……" if mode == "extensions" else "正在按关键词查询专用索引……")
+    if mode == "extensions":
+        raw_items = list(
+            scan_extensions(
+                selected_extensions,
+                es=args.es,
+                max_results_per_extension=int(rules.get("max_results_per_keyword", 100000)),
+                path_prefix=args.path,
+                instance=FILECHECK_INSTANCE,
+                exclude_roots=exclusions,
+            )
+        )
+    else:
+        raw_items = list(
+            scan_keywords(
+                rules["keywords"],
+                rules["extensions"],
+                es=args.es,
+                max_results_per_keyword=int(rules.get("max_results_per_keyword", 100000)),
+                match_path=args.match_path,
+                path_prefix=args.path,
+                instance=FILECHECK_INSTANCE,
+                exclude_roots=exclusions,
+            )
+        )
     items, protected_batches = filter_protected_backup_items(raw_items)
     excluded_backup_items = len(raw_items) - len(items)
     if excluded_backup_items:
@@ -222,7 +241,9 @@ def cmd_scan(args: argparse.Namespace) -> int:
         "excluded_roots": exclusions,
         "protected_backup_batches": protected_batches,
         "excluded_backup_items": excluded_backup_items,
-        "match_path": args.match_path,
+        "scan_mode": mode,
+        "selected_extensions": selected_extensions if mode == "extensions" else list(rules["extensions"]),
+        "match_path": args.match_path if mode == "keywords" else False,
         "path_filter": args.path,
         "rules": _rules_metadata(args.rules),
         "items": items,
@@ -231,7 +252,7 @@ def cmd_scan(args: argparse.Namespace) -> int:
     csv_path = _write_scan_csv(output, items)
     print(f"\n扫描 JSON: {_info(str(output.resolve()))}")
     print(f"人工核对 CSV: {_info(str(csv_path.resolve()))}")
-    print(_warning("关键词命中只表示候选，请先人工核对，再进入备份。"))
+    print(_warning("扫描结果仅为候选，请先人工核对，再进入备份。"))
     return 0
 
 
@@ -436,6 +457,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--everything")
     p.add_argument("--path", help="高级用法：仅扫描已建索引中的指定子目录")
     p.add_argument("--match-path", action="store_true", help="关键词同时匹配完整路径；默认只匹配文件名")
+    p.add_argument("--mode", choices=("keywords", "extensions"), default="keywords", help="扫描模式，默认关键词+类型")
+    p.add_argument("--extensions", help="仅扩展名模式：逗号/分号分隔，如 pdf,docx,xlsx；默认使用规则文件 extensions")
     p.add_argument("--output", default=_default_scan_output(), help="扫描结果 JSON")
     p.add_argument("--list-limit", type=int, default=100)
     p.set_defaults(func=cmd_scan)
