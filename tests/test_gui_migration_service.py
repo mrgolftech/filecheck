@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import stat
 from pathlib import Path
+
+import pytest
 
 from filecheck.backup import create_backup
 from filecheck.gui.migration_service import (
@@ -117,3 +120,63 @@ def test_resume_service_finishes_checkpointed_operation(tmp_path: Path) -> None:
     assert result.status == "completed"
     assert result.deleted == 2
     assert second.exists() is False
+
+
+def test_gui_removal_clears_readonly_before_unlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: GUI used migration._remove_one with a direct Path.unlink."""
+    source = tmp_path / "readonly.txt"
+    source.write_bytes(b"safe backed-up content")
+    backup = create_backup([source], tmp_path / "backup")
+    task = FakeTask()
+    run_removal_preflight(backup, task)
+
+    source.chmod(source.stat().st_mode & ~stat.S_IWRITE)
+    real_unlink = Path.unlink
+    calls = {"count": 0}
+
+    def assert_writable_then_unlink(path: Path, *args, **kwargs) -> None:
+        if path == source:
+            calls["count"] += 1
+            assert path.stat().st_mode & stat.S_IWRITE, "read-only bit not cleared"
+        real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", assert_writable_then_unlink)
+    result = run_source_removal(backup, task)
+    assert result.status == "completed"
+    assert result.deleted == 1
+    assert calls["count"] == 1
+    assert not source.exists()
+
+
+def test_gui_failed_unlink_preserves_readonly_and_supports_resume(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "readonly.txt"
+    source.write_bytes(b"safe backed-up content")
+    backup = create_backup([source], tmp_path / "backup")
+    task = FakeTask()
+    run_removal_preflight(backup, task)
+
+    source.chmod(source.stat().st_mode & ~stat.S_IWRITE)
+    real_unlink = Path.unlink
+
+    def deny_source_unlink(path: Path, *args, **kwargs) -> None:
+        if path == source:
+            assert path.stat().st_mode & stat.S_IWRITE
+            raise PermissionError(5, "Access is denied", str(path))
+        real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", deny_source_unlink)
+    result = run_source_removal(backup, task)
+    assert result.failed == 1
+    assert source.exists()
+    assert not (source.stat().st_mode & stat.S_IWRITE)
+    assert result.failed_report is not None
+
+    monkeypatch.setattr(Path, "unlink", real_unlink)
+    resumed = run_resume_removal(backup, task)
+    assert resumed.status == "completed"
+    assert resumed.deleted == 1
+    assert not source.exists()
