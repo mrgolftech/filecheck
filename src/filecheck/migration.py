@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Callable, Iterable
 
 from .backup import BackupError, ProgressCallback, verify_backup
+from .source_delete import unlink_ignoring_readonly
 from .util import now_iso, read_json, sha256_file, write_json, write_text
 
 
@@ -231,7 +232,7 @@ def _remove_one(row: dict, manifest_item: dict) -> None:
         row["error"] = reason
         return
     try:
-        source.unlink()
+        unlink_ignoring_readonly(source)
     except OSError as exc:
         row["state"] = "failed"
         row["error"] = str(exc)
