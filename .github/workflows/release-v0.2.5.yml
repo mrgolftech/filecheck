@@ -41,8 +41,8 @@ jobs:
           import re
           pyproject = Path("pyproject.toml").read_text(encoding="utf-8")
           source = Path("src/filecheck/__init__.py").read_text(encoding="utf-8")
-          assert re.search(r'^version\s*=\s*"0\.2\.4"\s*$', pyproject, re.M), "pyproject version mismatch"
-          assert re.search(r'^__version__\s*=\s*"0\.2\.4"\s*$', source, re.M), "package version mismatch"
+          assert re.search(r'^version\s*=\s*"0\.2\.5"\s*$', pyproject, re.M), "pyproject version mismatch"
+          assert re.search(r'^__version__\s*=\s*"0\.2\.5"\s*$', source, re.M), "package version mismatch"
           assert Path("packaging/RELEASE_NOTES_V0.2.5.md").is_file()
           print("Source version and release notes OK")
           PY
