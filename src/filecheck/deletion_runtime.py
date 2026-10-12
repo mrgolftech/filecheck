@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import os
-import stat
 from pathlib import Path
 
 from . import migration as base
 from .backup import find_containing_backup_batch, verify_backup
+from .source_delete import unlink_ignoring_readonly as _unlink_ignoring_readonly
 from .util import now_iso, read_json, sha256_file
 
 
@@ -147,30 +147,6 @@ def _validated_cached_preflight(backup_path: Path, *, progress=None) -> dict:
     except OSError as exc:
         raise base.MigrationError(f"删除前快速复核备份状态失败；未删除任何源文件: {exc}") from exc
     return cached
-
-
-def _unlink_ignoring_readonly(source: Path) -> None:
-    """Delete while treating the Windows read-only attribute as non-blocking.
-
-    Windows DeleteFile has no "ignore read-only" flag.  The practical equivalent
-    is to clear only the read-only/write-protect bit before deletion.  If delete
-    still fails (ACL, lock, antivirus, etc.), restore the original mode when the
-    file still exists so unrelated attributes are not silently changed.
-    """
-    original_mode = source.stat().st_mode
-    changed_readonly = not bool(original_mode & stat.S_IWRITE)
-    if changed_readonly:
-        source.chmod(original_mode | stat.S_IWRITE)
-    try:
-        source.unlink()
-    except OSError:
-        if changed_readonly:
-            try:
-                if source.exists():
-                    source.chmod(original_mode)
-            except OSError:
-                pass
-        raise
 
 
 # Backward-compatible internal alias for older tests/callers.

@@ -2,7 +2,7 @@
 
 FileCheck 是一个面向 Windows 终端的离线文件自查、备份与恢复工具，用于完成：**快速索引 → 关键词+文件类型扫描 / 指定扩展名扫描 → 人工核对 → 批量目录备份 → 完整性验证 → 源文件安全删除 → 按原路径恢复**。
 
-当前版本：**v0.2.4**（详见 [GitHub Releases](https://github.com/mrgolftech/filecheck/releases)；下载已发布版本）。
+当前版本：**v0.2.5**（详见 [GitHub Releases](https://github.com/mrgolftech/filecheck/releases)；下载已发布版本）。
 
 FileCheck 同时提供 **GUI 图形界面** 和 **CLI 命令行**。两种入口共用同一套核心逻辑、扫描规则、Everything 专用索引、备份格式和 SHA-256 校验机制。
 
@@ -10,17 +10,21 @@ FileCheck 同时提供 **GUI 图形界面** 和 **CLI 命令行**。两种入口
 >
 > `scan` 和 `backup` 永远不会自动删除源文件。扫描命中只表示“候选”，不代表违规或最终分类结论。
 
-## v0.2.4 发布包
+## v0.2.5 发布包
 
 正式 Release 提供 3 个便携包：
 
-- `FileCheck-v0.2.4-gui-x64.zip`：GUI 完整版，面向 Windows 7 SP1 / Windows 10 / Windows 11 64 位，**普通用户推荐**；包内同时包含 x64 CLI。
-- `FileCheck-v0.2.4-cli-x64.zip`：纯命令行版，面向 Windows 7 SP1 / Windows 10 / Windows 11 64 位。
-- `FileCheck-v0.2.4-cli-x86.zip`：纯命令行兼容版，面向 Windows 7 SP1 32 位。
+- `FileCheck-v0.2.5-gui-x64.zip`：GUI 完整版，面向 Windows 7 SP1 / Windows 10 / Windows 11 64 位，**普通用户推荐**；包内同时包含 x64 CLI。
+- `FileCheck-v0.2.5-cli-x64.zip`：纯命令行版，面向 Windows 7 SP1 / Windows 10 / Windows 11 64 位。
+- `FileCheck-v0.2.5-cli-x86.zip`：纯命令行兼容版，面向 Windows 7 SP1 32 位。
 
 所有便携包均内置对应架构的 Everything 和 ES，解压后即可运行，不需要安装 Python，也不要求系统预先安装 Everything。
 
 > GUI/x64 CLI 使用 Python 3.8.10 x64 + PyInstaller 5.13.2 的 Windows 7 兼容构建基线；x86 CLI 使用 Python 3.8.10 x86 + PyInstaller 5.13.2。CI 会执行 Python 3.8 兼容、完整回归、现代 Windows GUI 构造、EXE smoke test 和最终 ZIP 校验。正式部署到具体 Windows 7 机器前，仍建议在目标环境做一次实际运行验证。
+
+## v0.2.5 修复说明
+
+修复 GUI「源文件删除」路径没有处理 Windows 只读文件、可能报 `[WinError 5] 拒绝访问` 的问题。GUI 与 CLI 现在统一使用公共只读文件删除函数：仅在已完成源文件 SHA-256 复核后临时清除只读位并删除；若删除失败且文件仍存在，尝试恢复其原有只读状态，保留失败记录以便继续处理。**不自动提权、不修改 ACL/所有权，不绕过文件占用或系统保护。** 既有 v0.2.4 安装包不包含本修复。
 
 ## v0.2.4 新增功能
 
@@ -42,9 +46,9 @@ v0.2.2 已有的备份核心保护、删除预检保护、删除运行时硬保�
 
 | 使用场景 | 推荐包 |
 | --- | --- |
-| 日常人工操作、希望使用图形界面 | `FileCheck-v0.2.4-gui-x64.zip` |
-| 64 位 Windows 上脚本化、批处理或高级诊断 | `FileCheck-v0.2.4-cli-x64.zip` |
-| Windows 7 SP1 32 位旧机器 | `FileCheck-v0.2.4-cli-x86.zip` |
+| 日常人工操作、希望使用图形界面 | `FileCheck-v0.2.5-gui-x64.zip` |
+| 64 位 Windows 上脚本化、批处理或高级诊断 | `FileCheck-v0.2.5-cli-x64.zip` |
+| Windows 7 SP1 32 位旧机器 | `FileCheck-v0.2.5-cli-x86.zip` |
 
 GUI 包中的高级命令行入口位于：
 
